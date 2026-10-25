@@ -43,6 +43,6 @@ else
   echo "[ok] 前端产物是最新的"
 fi
 
-export REVIEW_PORT="${REVIEW_PORT:-8000}"
-echo "== 服务启动中，浏览器打开 http://127.0.0.1:$REVIEW_PORT =="
+export REVIEW_PORT="${REVIEW_PORT:-18080}"
+echo "== 服务启动中，浏览器打开 http://127.0.0.1:$REVIEW_PORT （若该端口被系统占用会自动顺延，实际端口见下一行）=="
 exec $PY backend/run.py

@@ -21,7 +21,7 @@ cd ashare-review
 脚本会：检测 Python → 安装后端依赖 → 必要时重建前端 → 启动服务。
 
 两条硬约束：**前端构建失败绝不会阻止服务启动**（界面旧只是难看，服务起不来会被误判成数据丢失）；
-**端口不会被悄悄改掉**——`-Port` 优先，其次沿用已有的 `REVIEW_PORT`，最后才是 8000。
+**端口不会被悄悄改掉**——`-Port` 优先，其次沿用已有的 `REVIEW_PORT`，最后才是 18080。
 
 ### 方式 B：手动
 
@@ -29,20 +29,26 @@ cd ashare-review
 # 1) 后端（Python 3.10+）
 cd backend
 pip install -r requirements.txt
-python run.py                      # 默认 http://127.0.0.1:8000
+python run.py                      # 默认 http://127.0.0.1:18080
 
 # 2) 前端（Node 18+）
 cd ../frontend
 npm install
 npm run build                      # 产物输出到 backend/static，由后端直接托管
-# 或者开发模式：npm run dev（5173 端口，自动代理 /api 到 8000）
+# 或者开发模式：npm run dev（5173 端口，自动代理 /api 到 18080）
 ```
 
-打开 `http://127.0.0.1:8000` 即可。接口文档在 `http://127.0.0.1:8000/api/docs`。
+打开 `http://127.0.0.1:18080` 即可。接口文档在 `http://127.0.0.1:18080/api/docs`。
 
-> **端口统一为 8000**（`run.py`、`scripts/start.ps1`、`scripts/start.sh` 默认一致）。
-> 被占用时：`.\scripts\start.ps1 -Port 8080`，或 `set REVIEW_PORT=8080 && python backend\run.py`。
-> 启动日志最后一行会打印实际监听地址，以它为准。
+> **默认端口 18080**（`run.py`、`scripts/start.ps1`、`scripts/start.sh` 一致）。
+> 为什么不是 8000：Windows 的 Hyper-V/WSL 会不断把 1024–15000 里的随机区段划进
+> 「TCP 排除端口范围」（`netsh int ipv4 show excludedportrange protocol=tcp`），
+> 8000 和 8088 都已被吞过，绑定时报 `WinError 10013`，看起来像权限问题。
+> 18080 在动态端口范围之外，不会被划走。
+>
+> 即使 18080 也被占用，`run.py` 会按候选列表（18081/18888/19090/28080/9090/8088/8080）
+> 自动顺延，并**把实际地址打印在启动日志第一行**，以它为准。
+> 想强制指定：`.\scripts\start.ps1 -Port 8080`，或 `set REVIEW_PORT=8080 && python backend\run.py`。
 
 ### 可选增强（不装也能跑）
 
@@ -140,7 +146,7 @@ ashare-review/
 |---|---|
 | 跑完 `start.ps1` 整个应用打不开、像是数据全丢 | 检查脚本输出最后有没有 `== Server starting: ... ==` 这一行。没有就是启动前挂了（历史原因：npm 的 stderr 在 `$ErrorActionPreference="Stop"` 下会被升级成终止性错误）。现在构建失败已不会中断启动；急用时 `.\scripts\start.ps1 -NoBuild` 直接起服务，前端构建单独做 |
 | `start.ps1` 报「一元运算符"!"后面缺少表达式」等语法错 | 脚本被以 ANSI/GBK 解码。本项目脚本已保存为 **UTF-8 with BOM**；若你自行编辑过，请用 VSCode/记事本另存为「UTF-8 with BOM」，或直接使用英文消息版本 |
-| 端口 8000 被占用（WinError 10013 / address already in use） | `.\scripts\start.ps1 -Port 8080`，或 `set REVIEW_PORT=8080 && python backend\run.py` |
+| 端口 18080 被占用（WinError 10013 / address already in use） | `.\scripts\start.ps1 -Port 8080`，或 `set REVIEW_PORT=8080 && python backend\run.py` |
 | 页面打开是空白/提示未连接后端 | 后端没启动或端口不对；确认 `python backend\run.py` 在运行，浏览器地址与 `REVIEW_PORT` 一致 |
 | 某些指数/外围显示「—」 | 该资产所有源都不可用（如国内访问 Yahoo 被 403）。到「数据源设置」页看健康度，或挂代理后点「强制刷新」 |
 | 新接口返回 `{"detail":"not found"}`、或新字段一直是空 | 跑着的后端进程比代码旧。`/api` 的 404 响应会自带 `likely_cause` 与 `fix`，`/api/health` 的 `backend.stale` 也会标出来。重启后端即可 |
@@ -153,7 +159,7 @@ ashare-review/
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `REVIEW_PORT` / `REVIEW_HOST` | 8000 / 127.0.0.1 | 监听地址 |
+| `REVIEW_PORT` / `REVIEW_HOST` | 18080 / 127.0.0.1 | 监听地址 |
 | `REVIEW_OFFLINE` | 0 | 1=离线样例模式 |
 | `REVIEW_SCHEDULER` | 1 | 0=关闭定时任务 |
 | `REVIEW_WARMUP` | 1 | 启动时预热缓存 |
@@ -195,9 +201,9 @@ ashare-review/
 前瞻样本只能从今天开始攒，每拖一天就永久少一天。收盘定时任务（15:14）会自动做这两件事；也可手动：
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/api/track/freeze"    # 收盘后冻结今日信号
-curl -X POST "http://127.0.0.1:8000/api/track/settle"    # 次日及以后回填前瞻结果
-curl "http://127.0.0.1:8000/api/track/record?strategy=first_board&horizon=1"
+curl -X POST "http://127.0.0.1:18080/api/track/freeze"    # 收盘后冻结今日信号
+curl -X POST "http://127.0.0.1:18080/api/track/settle"    # 次日及以后回填前瞻结果
+curl "http://127.0.0.1:18080/api/track/record?strategy=first_board&horizon=1"
 ```
 
 或直接打开「证据与验证」页，三个按钮都在上面。**账本断档就是断档——不要事后补冻结**，

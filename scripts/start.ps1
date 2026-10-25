@@ -10,7 +10,10 @@
 #      annoying; a script that dies before starting the backend looks like total
 #      data loss and sends you hunting in the wrong place.
 #   2. The port is never changed behind your back: -Port wins, then an existing
-#      $env:REVIEW_PORT, then 8000 (which matches run.py / config.py / README).
+#      $env:REVIEW_PORT, then 18080. 18080 sits outside the Windows dynamic port
+#      range (1024-15000), which Hyper-V keeps reserving in random blocks — 8000
+#      and 8088 have both been swallowed by those reservations. If 18080 is also
+#      taken, run.py walks its candidate list and prints the real URL it bound.
 param([switch]$Offline, [switch]$Rebuild, [switch]$NoBuild, [int]$Port = 0)
 
 $ErrorActionPreference = "Stop"
@@ -133,13 +136,13 @@ if ($needBuild -and -not $NoBuild.IsPresent) {
   Write-Host "[ok] frontend bundle is up to date (backend\static)"
 }
 
-# -Port > existing $env:REVIEW_PORT > 8000. Overwriting REVIEW_PORT uncondi-
+# -Port > existing $env:REVIEW_PORT > 18080. Overwriting REVIEW_PORT uncondi-
 # tionally (what this used to do) silently relocates the server away from the
 # port you had been using, and the browser tab you still have open goes blank.
 if ($Port -le 0) {
   $envPort = 0
   if ($env:REVIEW_PORT) { [void][int]::TryParse($env:REVIEW_PORT, [ref]$envPort) }
-  $Port = if ($envPort -gt 0) { $envPort } else { 8000 }
+  $Port = if ($envPort -gt 0) { $envPort } else { 18080 }
 }
 $env:REVIEW_PORT = $Port
 if ($Offline) {
