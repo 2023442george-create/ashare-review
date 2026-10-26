@@ -56,7 +56,7 @@ function Test-App([int]$p) {
 }
 
 function Open-App([int]$p) {
-  if ($NoBrowser) { Write-Host "[ok] http://127.0.0.1:$p" ; return }
+  if ($NoBrowser) { Write-Host "[i] -NoBrowser：未打开浏览器，地址 http://127.0.0.1:$p" ; return }
   Start-Process "http://127.0.0.1:$p" | Out-Null
 }
 
@@ -129,6 +129,7 @@ if (-not $proc) {
   exit 1
 }
 $proc.Id | Set-Content $pidFile -Encoding ascii
+Write-Host "[i] 进程已拉起（pid $($proc.Id)），等待服务就绪…首次启动要预热缓存，约 10-20 秒"
 
 # ---------- 5. 从日志读实际端口（run.py 会自动挑端口） ----------
 $url = $null
