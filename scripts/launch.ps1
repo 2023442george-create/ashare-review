@@ -57,7 +57,13 @@ function Test-App([int]$p) {
 
 function Open-App([int]$p) {
   if ($NoBrowser) { Write-Host "[i] -NoBrowser：未打开浏览器，地址 http://127.0.0.1:$p" ; return }
-  Start-Process "http://127.0.0.1:$p" | Out-Null
+  $url = "http://127.0.0.1:$p"
+  try {
+    Start-Process $url | Out-Null
+  } catch {
+    # Start-Process 在这台机器上可能因环境变量重复而抛 “已添加项”，explorer 走另一条路径
+    try { & "$env:SystemRoot\explorer.exe" $url } catch { Write-Host "[!] 请手动打开：$url" }
+  }
 }
 
 # ---------- 1. 已经在跑就直接开 ----------
