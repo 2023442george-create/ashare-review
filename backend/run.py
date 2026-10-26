@@ -41,6 +41,17 @@ def pick_port(host: str, preferred: int | None) -> int:
 
 
 def main() -> None:
+    # 桌面快捷方式用隐藏窗口启动，控制台没有有效句柄，print 会直接崩。
+    # 设了 REVIEW_LOG 就自己把 stdout/stderr 重定向到文件。
+    log_path = os.getenv("REVIEW_LOG")
+    if log_path:
+        try:
+            f = open(log_path, "a", encoding="utf-8", buffering=1)
+            sys.stdout = f
+            sys.stderr = f
+        except OSError:
+            pass
+
     host = os.getenv("REVIEW_HOST", "127.0.0.1")
     preferred = int(os.getenv("REVIEW_PORT", "0") or 0)
     port = pick_port(host, preferred)

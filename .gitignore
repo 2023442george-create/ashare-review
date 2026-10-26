@@ -9,6 +9,9 @@ work/
 *.db
 *.log
 
+# 运行日志（快捷方式会把后端输出写到 logs/）
+logs/
+
 # 回退快照：体积大且可从源码重建，不入库
 .workbuddy/backup/
 
