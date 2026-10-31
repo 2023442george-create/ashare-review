@@ -37,6 +37,12 @@ CREATE TABLE IF NOT EXISTS note(
     content    TEXT,
     updated_at TEXT
 );
+-- macro_daily：宏观温度每日快照（只存精简摘要，不存序列），用于画温度分历史曲线
+CREATE TABLE IF NOT EXISTS macro_daily(
+    trade_date TEXT PRIMARY KEY,
+    payload    TEXT NOT NULL,
+    updated_at TEXT
+);
 CREATE TABLE IF NOT EXISTS watchlist(
     code       TEXT PRIMARY KEY,
     name       TEXT,
@@ -214,6 +220,39 @@ def load_market_history(days: int = 60) -> list[dict[str, Any]]:
         except Exception:
             continue
         d["trade_date"] = r["trade_date"]
+        out.append(d)
+    return out
+
+
+def save_macro(trade_date: str, payload: dict[str, Any]) -> None:
+    """写入（或覆盖）某交易日的宏观温度摘要。同一天多次计算以最后一次为准。"""
+    from .utils import normalize_date
+
+    trade_date = normalize_date(trade_date)
+    with _lock:
+        c = conn()
+        c.execute(
+            "INSERT INTO macro_daily(trade_date,payload,updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at",
+            (trade_date, json.dumps(payload, ensure_ascii=False), _now()),
+        )
+        c.commit()
+
+
+def load_macro_history(days: int = 250) -> list[dict[str, Any]]:
+    """最近 days 条宏观温度摘要，按日期升序。"""
+    with _lock:
+        rows = conn().execute(
+            "SELECT trade_date,payload,updated_at FROM macro_daily ORDER BY trade_date DESC LIMIT ?", (days,)
+        ).fetchall()
+    out = []
+    for r in reversed(rows):
+        try:
+            d = json.loads(r["payload"])
+        except Exception:
+            continue
+        d["trade_date"] = r["trade_date"]
+        d["updated_at"] = r["updated_at"]
         out.append(d)
     return out
 

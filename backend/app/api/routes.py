@@ -11,7 +11,7 @@ from ..core.config import backend_freshness, settings, static_freshness
 from ..core import http
 from ..core.http import SOURCE_STATS
 from ..core.utils import last_trade_day
-from ..services import (auction as auction_svc, globalmarket, lhb as lhb_svc, limitup, market,
+from ..services import (auction as auction_svc, globalmarket, lhb as lhb_svc, limitup, macro, market,
                         news as news_svc, reconcile as reconcile_svc, report as report_svc,
                         screener as screener_svc, sectors, sentiment, track as track_svc)
 
@@ -57,6 +57,9 @@ async def refresh(kind: str = "all") -> dict:
         out["global"] = (await globalmarket.overview(force=True)).get("meta")
     if kind in ("all", "news"):
         out["news"] = (await news_svc.feed(limit=60, force=True)).get("meta")
+    if kind == "macro":
+        # 宏观接口多、数据日更，只在明确要求时重拉，不跟随"全部刷新"
+        out["macro"] = (await macro.overview(force=True)).get("meta")
     return out
 
 
@@ -147,6 +150,25 @@ async def lhb_focus(date: str = "") -> dict:
 @router.get("/global")
 async def global_overview(force: bool = False) -> dict:
     return await globalmarket.overview(force=force)
+
+
+# ---------------- 宏观水位 ----------------
+@router.get("/macro/overview")
+async def macro_overview(force: bool = False) -> dict:
+    """估值分位、股债性价比、利率、红利息差、成交额/两融分位、宽基 ETF 份额与宏观温度分。"""
+    return await macro.overview(force=force)
+
+
+@router.get("/macro/history")
+async def macro_history(days: int = 250) -> dict:
+    """每日宏观温度快照（收盘后定时任务写入）。"""
+    return macro.history(min(days, 2000))
+
+
+@router.get("/macro/probe")
+async def macro_probe() -> dict:
+    """逐个宏观数据源发最小请求，报告是否可用、样例值与缺失字段。首次接入时用来核对接口。"""
+    return await macro.probe()
 
 
 # ---------------- 资讯 ----------------

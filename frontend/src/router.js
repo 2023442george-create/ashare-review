@@ -8,6 +8,7 @@ const routes = [
   { path: '/sectors', name: 'sectors', component: () => import('./views/Sectors.vue'), meta: { title: '板块主线', ico: '▤', grp: '资金' } },
   { path: '/lhb', name: 'lhb', component: () => import('./views/Lhb.vue'), meta: { title: '龙虎榜', ico: '★', grp: '资金' } },
   { path: '/global', name: 'global', component: () => import('./views/Global.vue'), meta: { title: '外围市场', ico: '⊕', grp: '外部' } },
+  { path: '/macro', name: 'macro', component: () => import('./views/Macro.vue'), meta: { title: '宏观水位', ico: '◈', grp: '外部' } },
   { path: '/news', name: 'news', component: () => import('./views/News.vue'), meta: { title: '快讯资讯', ico: '✎', grp: '外部' } },
   { path: '/screener', name: 'screener', component: () => import('./views/Screener.vue'), meta: { title: '游资选股器', ico: '⌕', grp: '决策' } },
   { path: '/auction', name: 'auction', component: () => import('./views/Auction.vue'), meta: { title: '次日竞价确认', ico: '⚡', grp: '决策' } },

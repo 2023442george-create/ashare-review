@@ -225,3 +225,65 @@ async def fast_news(limit: int = 60) -> list[dict]:
             "source": "东方财富",
         })
     return out
+
+
+# ---------------- 中美国债收益率（宏观水位用） ----------------
+# 字段代码 → 含义。东财经济数据库的指标代码，长期稳定。
+TREASURY_FIELDS = {
+    "EMM00588704": "cn2y", "EMM00166466": "cn10y", "EMM00166469": "cn30y",
+    "EMG00001306": "us2y", "EMG00001310": "us10y",
+}
+LEGACY_DC_URL = "https://datacenter.eastmoney.com/api/data/get"
+LEGACY_TOKEN = "894050c76af8597a853f5b408b759f5d"
+
+
+def parse_treasury(rows: list[dict]) -> list[dict]:
+    """把国债收益率原始行转成 [{date, cn10y, us10y, ...}]（升序，单位 %）。
+
+    某天某国休市时对应字段为空：保留 None，不能补 0，否则利差会出现假跳变。
+    """
+    out = []
+    for r in rows or []:
+        d = str(r.get("SOLAR_DATE") or "")[:10]
+        if not d:
+            continue
+        item = {"date": d}
+        for k, name in TREASURY_FIELDS.items():
+            item[name] = fnum(r.get(k))
+        out.append(item)
+    out.sort(key=lambda x: x["date"])
+    return out
+
+
+async def treasury_yield(pages: int = 6, page_size: int = 500) -> list[dict]:
+    """中美国债收益率历史（新版 datacenter-web 接口），默认取约 10 年。
+
+    按日期倒序分页拉取，每页 500 行；某页为空就停止，不再继续请求。
+    """
+    rows: list[dict] = []
+    for p in range(1, pages + 1):
+        # 复用通用 datacenter 方法，按 SOLAR_DATE 倒序取第 p 页
+        batch = await datacenter("RPTA_WEB_TREASURYYIELD", sort_columns="SOLAR_DATE", sort_types="-1",
+                                 page_size=page_size, page_number=p)
+        if not batch:
+            break
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+    return parse_treasury(rows)
+
+
+async def treasury_yield_legacy(pages: int = 6, page_size: int = 500) -> list[dict]:
+    """同一份数据的旧版接口（datacenter.eastmoney.com + 固定 token），作为新版不可用时的备用。"""
+    rows: list[dict] = []
+    for p in range(1, pages + 1):
+        params = {"type": "RPTA_WEB_TREASURYYIELD", "sty": "ALL", "st": "SOLAR_DATE", "sr": "-1",
+                  "token": LEGACY_TOKEN, "p": p, "ps": page_size, "pageNo": p, "pageNum": p}
+        data = await http.fetch_json(LEGACY_DC_URL, source="eastmoney", params=params)
+        batch = ((data or {}).get("result") or {}).get("data") or []
+        if not batch:
+            break
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+    return parse_treasury(rows)

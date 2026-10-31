@@ -3,6 +3,7 @@
 - 交易日 09:15-11:35 / 12:55-15:05：每 2 分钟刷新行情与情绪
 - 15:10：生成当日复盘快照（含龙虎榜、板块、报告），写入 SQLite 历史
 - 15:14：冻结当日信号到结果账本（含未选中标的），并结算此前各日的前瞻结果
+- 15:25 / 21:10：计算宏观水位（估值/ERP/国债/两融/ETF 份额）并写入每日快照
 - 21:00：补充龙虎榜（交易所一般 17:00-19:00 公布）
 
 为什么冻结必须由定时任务做、而不是等人点按钮：
@@ -16,7 +17,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from ..services import lhb, limitup, market, report, sentiment, track
+from ..services import lhb, limitup, macro, market, report, sentiment, track
 from .config import settings
 from .utils import is_trade_day, last_trade_day, now_cn
 
@@ -65,6 +66,22 @@ async def job_ledger() -> None:
         log.warning("ledger settle failed: %s", exc)
 
 
+async def job_macro() -> None:
+    """收盘后计算一次宏观水位；overview() 内部会把温度摘要写入 macro_daily。
+
+    国债、两融、ETF 份额多在收盘后陆续更新，21:00 再跑一次补齐当天数据。
+    """
+    if not is_trade_day(now_cn().date()):
+        return
+    try:
+        res = await macro.overview(force=True)
+        t = res.get("temperature") or {}
+        log.info("macro done: score=%s used=%s/%s gaps=%s", t.get("score"), t.get("used"), t.get("total"),
+                 len(res.get("gaps") or []))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("macro failed: %s", exc)
+
+
 async def job_lhb() -> None:
     d = str(last_trade_day())
     try:
@@ -85,8 +102,10 @@ def start() -> None:
     _scheduler.add_job(job_close, CronTrigger(hour=15, minute=10, day_of_week="mon-fri"), id="close_snapshot")
     _scheduler.add_job(job_ledger, CronTrigger(hour=15, minute=14, day_of_week="mon-fri"), id="ledger")
     _scheduler.add_job(job_lhb, CronTrigger(hour=21, minute=0, day_of_week="mon-fri"), id="lhb_night")
+    _scheduler.add_job(job_macro, CronTrigger(hour=15, minute=25, day_of_week="mon-fri"), id="macro_close")
+    _scheduler.add_job(job_macro, CronTrigger(hour=21, minute=10, day_of_week="mon-fri"), id="macro_night")
     _scheduler.start()
-    log.info("scheduler started (intraday/2min, close@15:10, ledger@15:14, lhb@21:00)")
+    log.info("scheduler started (intraday/2min, close@15:10, ledger@15:14, macro@15:25/21:10, lhb@21:00)")
 
 
 def stop() -> None:

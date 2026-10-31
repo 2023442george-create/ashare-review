@@ -45,6 +45,8 @@ class Settings:
     ttl_global: int = int(os.getenv("REVIEW_TTL_GLOBAL", "60"))
     ttl_kline: int = int(os.getenv("REVIEW_TTL_KLINE", "1800"))
     ttl_daily: int = int(os.getenv("REVIEW_TTL_DAILY", "21600"))
+    # 宏观数据（估值/国债/ETF 份额）一天只更新一次，缓存 6 小时
+    ttl_macro: int = int(os.getenv("REVIEW_TTL_MACRO", "21600"))
 
     # 定时任务
     scheduler_enabled: bool = _bool("REVIEW_SCHEDULER", True)
@@ -61,6 +63,9 @@ class Settings:
             "global": ["tencent", "sina", "eastmoney", "yahoo", "stooq", "mock"],
             "news": ["wallstcn", "eastmoney", "sina", "cls", "mock"],
             "margin": ["eastmoney", "akshare", "mock"],
+            # 宏观：估值以中证官网为主（官方口径），蛋卷补 PB/股息率并作 PE 备用
+            "valuation": ["csindex", "danjuan", "mock"],
+            "bond": ["eastmoney", "eastmoney_legacy", "mock"],
         }
     )
 

@@ -34,6 +34,11 @@ export const api = {
   lhbFocus: (date = '') => http.get('/lhb/focus', { params: { date } }),
 
   global: (force = false) => http.get('/global', { params: { force } }),
+
+  // ---- 宏观水位：估值分位 / ERP / 国债 / 资金 / ETF 份额 / 温度分 ----
+  macro: (force = false) => http.get('/macro/overview', { params: { force } }),
+  macroHistory: (days = 250) => http.get('/macro/history', { params: { days } }),
+  macroProbe: () => http.get('/macro/probe'),
   news: (p = {}) => http.get('/news', { params: Object.assign({ limit: 100 }, p) }),
 
   screener: (strategy = 'first_board', date = '') => http.get('/screener', { params: { strategy, date } }),
