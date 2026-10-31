@@ -225,6 +225,46 @@
           </div>
         </div>
       </Panel>
+      <!-- AH 溢价：A 股相对 H 股贵多少 -->
+      <Panel title="AH 溢价指数" :sub="`恒生沪深港通AH股溢价指数，近约2年；来源 ${ah.source || '—'}`" :loading="loading"
+             :empty="ah.value == null">
+        <div class="row" style="gap:14px;margin-bottom:4px">
+          <span class="mono" style="font-size:22px" :style="{ color: ah.pct == null ? '#e8eef7' : scoreColor(ah.pct) }">{{ num(ah.value, 2) }}</span>
+          <span class="small muted">分位 {{ ah.pct ?? '—' }}% · 20日 <span :class="cls(ah.chg20)">{{ signed(ah.chg20, 2) }}</span></span>
+        </div>
+        <EChart :option="ahOpt" :height="200" />
+        <div class="small muted">{{ ah.how }}</div>
+      </Panel>
+    </div>
+
+    <div class="grid" style="grid-template-columns:1fr 1fr">
+      <!-- 南向资金：内地资金往港股跑的力度 -->
+      <Panel title="南向资金" :sub="`港股通（沪+深）每日净买入，亿元；来源 ${south.source || '—'}`" :loading="loading"
+             :empty="south.latest == null">
+        <div class="row-wrap small" style="gap:6px;margin-bottom:6px">
+          <span class="chip">{{ south.date }} 净买入 <b :class="cls(south.latest)">{{ signed(south.latest, 2) }}</b></span>
+          <span class="chip">近5日 <b :class="cls(south.sum5)">{{ signed(south.sum5, 1) }}</b></span>
+          <span class="chip">近20日 <b :class="cls(south.sum20)">{{ signed(south.sum20, 1) }}</b>（近一年分位 {{ south.sum20_pct ?? '—' }}%）</span>
+          <span class="chip">近60日 <b :class="cls(south.sum60)">{{ signed(south.sum60, 1) }}</b></span>
+        </div>
+        <EChart :option="southOpt" :height="200" />
+        <div class="small muted">{{ south.how }}</div>
+      </Panel>
+      <!-- 限售解禁：未来供给压力 -->
+      <Panel title="限售股解禁" :sub="`实际解禁市值（亿元），按当前股价估算；来源 ${lift.source || '—'}`" :loading="loading"
+             :empty="lift.next30_yi == null">
+        <div class="row-wrap small" style="gap:6px;margin-bottom:6px">
+          <span class="chip">未来7日 <b>{{ num(lift.next7_yi, 0) }}</b></span>
+          <span class="chip">未来30日 <b :style="{ color: (lift.next30_yi || 0) > (lift.past30_yi || 0) ? '#00b578' : '' }">{{ num(lift.next30_yi, 0) }}</b>
+            （{{ lift.next30_count ?? '—' }} 家次）</span>
+          <span class="chip">过去30日 {{ num(lift.past30_yi, 0) }}</span>
+        </div>
+        <EChart :option="liftOpt" :height="200" />
+        <div class="small muted">
+          解禁最多的几天：<span v-for="r in (lift.top_days || [])" :key="r.date" style="margin-right:10px">{{ r.date.slice(5) }} {{ num(r.cap_yi, 0) }}亿</span>
+          <div>{{ lift.how }}</div>
+        </div>
+      </Panel>
     </div>
 
     <!-- 缺口与探针：缺什么、为什么缺，一键核对每个源 -->
@@ -305,6 +345,9 @@ const mbuy = computed(() => (d.value.flows || {}).margin_buy || {})
 const basis = computed(() => d.value.basis || {})
 const basisOf = code => (basis.value.items || []).find(x => x.code === code) || {}
 const styles = computed(() => (d.value.style || {}).items || [])
+const ah = computed(() => (d.value.cross || {}).ah || {})
+const south = computed(() => (d.value.cross || {}).south || {})
+const lift = computed(() => d.value.lift || {})
 
 // ---------- 文案格式化 ----------
 /** 百分数（不带正负号），缺失显示 — */
@@ -337,7 +380,7 @@ function probeDetail(p) {
   if (p.missing_codes && p.missing_codes.length) parts.push('缺代码 ' + p.missing_codes.join(','))
   if (p.date) parts.push('统计日 ' + p.date)
   if (p.sample) parts.push('样例 ' + JSON.stringify(p.sample))
-  if (!p.ok && p.raw_keys) parts.push('实际字段 ' + p.raw_keys.join(','))
+  if (p.raw_keys && p.raw_keys.length && (!p.ok || p.show_keys)) parts.push('实际字段 ' + p.raw_keys.join(','))
   return parts.join('；') || '—'
 }
 
@@ -410,6 +453,25 @@ const basisOpt = computed(() => {
 // 风格比值：归一化后同图比较
 const styleOpt = computed(() => timeOpt(styles.value.map((x, i) =>
   ln(x.name, x.series || [], ['#ff7a45', '#4c9aff'][i % 2])), yVal('起点=100')))
+// AH 溢价：一条线 + 20% / 80% 分位参考线
+const ahOpt = computed(() => {
+  const q = ah.value.q || {}
+  const marks = [['q20', '20%', '#36cfc9'], ['q80', '80%', '#ff7a45']].filter(([k]) => q[k] != null)
+    .map(([k, label, c]) => ({ yAxis: q[k], lineStyle: { color: c, type: 'dashed' },
+      label: { formatter: `${label} {c}`, color: c, fontSize: 9, position: 'insideEndTop' } }))
+  return timeOpt([ln('AH溢价', ah.value.series || [], '#ffb020', { markLine: { silent: true, symbol: 'none', data: marks } })],
+    yVal(''), false)
+})
+// 南向资金：每日净买入柱（红 = 净买入，绿 = 净卖出）
+const southOpt = computed(() => timeOpt([{
+  name: '净买入', type: 'bar', barMaxWidth: 6,
+  data: (south.value.series || []).map(r => ({ value: r, itemStyle: { color: r[1] >= 0 ? '#ff4d4f' : '#00b578' } })),
+}], yVal('亿元'), false))
+// 限售解禁：未来30日逐日柱
+const liftOpt = computed(() => timeOpt([{
+  name: '解禁市值', type: 'bar', barMaxWidth: 10, itemStyle: { color: '#a97bff' },
+  data: (lift.value.future || []).map(r => [r.date, r.cap_yi]),
+}], yVal('亿元'), false))
 // 温度历史：0~100，20/80 两条档位线
 const histOpt = computed(() => timeOpt([ln('温度分', hist.value.map(r => [r.trade_date, r.score]), '#ff7a45', {
   showSymbol: true, symbolSize: 4,

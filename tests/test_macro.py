@@ -226,6 +226,25 @@ class GroupAIndicatorTests(unittest.TestCase):
         self.assertEqual(macro.margin_buy_ratio(rows, th), [["2026-10-29", 8.0]])
 
 
+class GroupBIndicatorTests(unittest.TestCase):
+    def test_southbound_units_and_gaps(self):
+        rows = em.parse_southbound([
+            {"TRADE_DATE": "2026-10-30 00:00:00", "NET_DEAL_AMT": 12345.0},   # 百万元 → 123.45 亿
+            {"TRADE_DATE": "2026-10-29 00:00:00", "NET_DEAL_AMT": None},      # 港股休市，跳过而不是 0
+        ])
+        self.assertEqual(rows, [["2026-10-30", 123.45]])
+
+    def test_lift_named_fields(self):
+        rows = em.parse_lift_days([{"FREE_DATE": "2026-11-05 00:00:00", "LIFT_NUM": 6, "ACTUAL_FREE_MARKET_CAP": 1234567}])
+        self.assertEqual(rows, [{"date": "2026-11-05", "count": 6, "cap_yi": 123.46}])     # 万元 → 亿元
+
+    def test_lift_positional_fallback(self):
+        """字段名猜错时按东财页面列序取：第 2 列家数、第 4 列实际解禁市值。"""
+        rows = em.parse_lift_days([{"D": "2026-11-06", "N": 3, "S": 999, "CAP": 50000, "f2": 4000}])
+        self.assertEqual(rows[0]["count"], 3)
+        self.assertEqual(rows[0]["cap_yi"], 5.0)
+
+
 class OverviewTests(unittest.TestCase):
     def setUp(self):
         self._offline, self._retries = settings.offline, settings.max_retries
@@ -252,6 +271,10 @@ class OverviewTests(unittest.TestCase):
         self.assertIsNotNone(res["rates"]["term_spread"])
         self.assertIsNotNone(res["flows"]["margin_buy"]["ratio"])
         self.assertEqual(len(res["style"]["items"]), 2)
+        self.assertIsNotNone(res["cross"]["south"]["sum20"])
+        self.assertIsNotNone(res["cross"]["ah"]["pct"])
+        self.assertTrue(all(r["date"] >= res["lift"]["future"][0]["date"] for r in res["lift"]["future"]))
+        self.assertEqual(res["gaps"], [])
         fut = res["futures"]["varieties"]
         self.assertEqual([v["code"] for v in fut], ["IF", "IH", "IC", "IM"])
         self.assertEqual(len(fut[0]["history"]), macro.MACRO_PARAMS["futures_days"])

@@ -14,6 +14,7 @@
 - 股指期货（IF/IH/IC/IM）前 20 会员多空持仓及其变化、主力合约基差与年化贴水率（不计入温度分）
 - 国债期限利差（10 年 − 2 年）、融资买入额占成交额比（计入资金分）
 - 风格比值：小盘/大盘（国证2000/沪深300）、红利/成长（中证红利/创业板指）
+- 南向资金净买入、恒生 AH 溢价指数、未来 30 日限售股解禁市值（不计入温度分）
 - 宏观温度分：拆成"估值分"和"资金分"两个子分数，总分是两者的平均
 
 为什么拆开：估值分位一年以上才走完一个来回，成交额、两融几周就能变一大截。
@@ -37,7 +38,7 @@ from typing import Any
 from ..core import cache, store
 from ..core.config import settings
 from ..core.utils import fnum, last_trade_day, now_cn, prev_trade_day, to_date, yi
-from ..sources import cffex, csindex, danjuan, sse
+from ..sources import cffex, csindex, danjuan, sse, tencent
 from ..sources import eastmoney as em
 
 # 宏观参数刻意不放进 core/params.py：那里的参数指纹会写进结果账本，
@@ -55,7 +56,9 @@ MACRO_PARAMS: dict[str, Any] = {
     "futures_days": 20,        # 股指期货会员持仓取最近多少个交易日画趋势
     "futures_top_members": 12, # 每个品种列出净持仓绝对值最大的前几名会员
     "basis_min_days": 7,       # 距到期不足几天的合约不算年化基差（分母太小会放大成离谱的数）
-    "style_days": 500,         # 风格比值的 K 线窗口（交易日）
+    "style_days": 500,         # 风格比值 / AH 溢价的 K 线窗口（交易日）
+    "south_days": 250,         # 南向资金取最近多少个交易日
+    "lift_window": 30,         # 限售解禁：向前、向后各看多少个自然日
 }
 
 # 风格比值：分子 / 分母都是腾讯/新浪格式的指数代码
@@ -407,6 +410,26 @@ def _mock_margin() -> list[list]:
             for i, d in enumerate(_mock_days(2))]
 
 
+def _mock_south() -> list[list]:
+    days = _mock_days(1)
+    return [[d, round(40 + 60 * math.sin(i / 9) + 20 * math.sin(i / 2.3), 2)] for i, d in enumerate(days)]
+
+
+def _mock_ah() -> list[list]:
+    """样例 AH 溢价：[date, open, close]，与 K 线格式一致（收盘价在下标 2）。"""
+    return [[d, 0, round(138 + 8 * math.sin(i / 70), 2)] for i, d in enumerate(_mock_days(2))]
+
+
+def _mock_lift() -> list[dict]:
+    start = now_cn().date() - dt.timedelta(days=MACRO_PARAMS["lift_window"])
+    out = []
+    for i in range(MACRO_PARAMS["lift_window"] * 2 + 1):
+        d = start + dt.timedelta(days=i)
+        if d.weekday() < 5:
+            out.append({"date": d.strftime("%Y-%m-%d"), "count": 3 + i % 7, "cap_yi": round(20 + 90 * (i % 9 == 0) + 5 * (i % 4), 2)})
+    return out
+
+
 def _mock_cffex_daily(date: str, lag: int) -> list[dict]:
     """样例期指日行情：主力合约贴水约 0.5%~1.5%。"""
     d0 = to_date(date) or now_cn().date()
@@ -675,6 +698,35 @@ async def futures_basis(force: bool = False) -> dict[str, Any]:
     return out
 
 
+async def southbound_series(force: bool = False) -> cache.Sourced:
+    """南向资金每日净买入（亿元）。"""
+    registry = {"eastmoney": lambda: em.southbound_history(MACRO_PARAMS["south_days"]), "mock": _mock_south}
+    return await cache.chain(cache.order_providers("margin", registry), cache_key="macro:south",
+                             ttl=settings.ttl_macro, force=force, validator=lambda r: isinstance(r, list) and len(r) >= 20)
+
+
+async def ah_series(force: bool = False) -> cache.Sourced:
+    """恒生 AH 股溢价指数日 K。主源东财（secid 100.HSAHP），备用腾讯（hkHSAHP）。"""
+    n = MACRO_PARAMS["style_days"]
+    registry = {"eastmoney": lambda: em.kline("100.HSAHP", 101, 1, n),
+                "tencent": lambda: tencent.kline("hkHSAHP", "day", n),
+                "mock": _mock_ah}
+    return await cache.chain(cache.order_providers("global", registry), cache_key="macro:ah",
+                             ttl=settings.ttl_macro, force=force,
+                             validator=lambda r: isinstance(r, list) and len(r) >= MACRO_PARAMS["min_flow_history"])
+
+
+async def lift_schedule(force: bool = False) -> cache.Sourced:
+    """过去 / 未来各 30 个自然日每天的限售股解禁市值。"""
+    w = MACRO_PARAMS["lift_window"]
+    today = now_cn().date()
+    start = (today - dt.timedelta(days=w)).strftime("%Y-%m-%d")
+    end = (today + dt.timedelta(days=w)).strftime("%Y-%m-%d")
+    registry = {"eastmoney": lambda: em.lift_days(start, end), "mock": _mock_lift}
+    return await cache.chain(cache.order_providers("margin", registry), cache_key="macro:lift",
+                             ttl=settings.ttl_macro, force=force, validator=lambda r: isinstance(r, list) and len(r) > 0)
+
+
 async def style_ratios(force: bool = False) -> dict[str, Any]:
     """风格比值：当前值、近约 2 年分位、20 日变化，以及归一化后的走势（窗口起点 = 100）。"""
     from . import market
@@ -847,6 +899,64 @@ def _margin_buy_block(margin_res: Any, th: dict, gaps: list[str]) -> dict[str, A
     }
 
 
+def _south_block(res: Any, gaps: list[str]) -> dict[str, Any]:
+    """南向资金：最新一日、近 5 / 20 / 60 日累计净买入，及 20 日累计在近一年里的分位。"""
+    rows = res.data if isinstance(res, cache.Sourced) and res.data else []
+    if not rows:
+        gaps.append("南向资金：东财沪深港通接口不可用")
+        return {"latest": None, "source": "none"}
+    vals = [v for _, v in rows]
+    sums20 = [sum(vals[i - 19:i + 1]) for i in range(19, len(vals))]
+    return {
+        "date": rows[-1][0], "latest": vals[-1], "sum5": round(sum(vals[-5:]), 2),
+        "sum20": round(sum(vals[-20:]), 2), "sum60": round(sum(vals[-60:]), 2),
+        "sum20_pct": percentile_rank(sums20, sums20[-1], 60) if sums20 else None,
+        "source": res.source, "series": rows[-120:],
+        "how": "内地资金经港股通买港股的净额（亿元）。持续大额净买入 = 资金更看好港股估值或在避开 A 股，"
+               "常与 AH 溢价走高同时出现",
+    }
+
+
+def _ah_block(res: Any, gaps: list[str]) -> dict[str, Any]:
+    """AH 溢价指数：当前值、近约 2 年分位、20 日变化。"""
+    rows = res.data if isinstance(res, cache.Sourced) and res.data else []
+    pts = [[r[0], r[2]] for r in rows if len(r) > 2 and r[2]]
+    if not pts:
+        gaps.append("AH 溢价指数：东财与腾讯行情均不可用")
+        return {"value": None, "pct": None, "source": "none"}
+    vals = [v for _, v in pts]
+    return {
+        "date": pts[-1][0], "value": vals[-1], "source": res.source, "n": len(vals), "from": pts[0][0],
+        "pct": percentile_rank(vals, vals[-1], MACRO_PARAMS["min_flow_history"]),
+        "q": {"q20": quantile(vals, .2), "q80": quantile(vals, .8)},
+        "chg20": round(vals[-1] - vals[-21], 2) if len(vals) > 20 else None,
+        "series": downsample(pts, 300),
+        "how": "100 = 同一批公司 A 股与 H 股同价，高于 100 的部分就是 A 股的溢价。分位越高，A 股相对国际定价越贵",
+    }
+
+
+def _lift_block(res: Any, gaps: list[str]) -> dict[str, Any]:
+    """限售解禁：未来 7 / 30 日合计、过去 30 日合计做对比，以及未来逐日明细。"""
+    rows = res.data if isinstance(res, cache.Sourced) and res.data else []
+    if not rows:
+        gaps.append("限售股解禁：东财数据中心不可用")
+        return {"next30_yi": None, "source": "none"}
+    today = now_cn().strftime("%Y-%m-%d")
+    in7 = (now_cn().date() + dt.timedelta(days=7)).strftime("%Y-%m-%d")
+    future = [r for r in rows if r["date"] >= today]
+    past = [r for r in rows if r["date"] < today]
+    top = sorted(future, key=lambda r: r["cap_yi"], reverse=True)[:5]
+    return {
+        "next7_yi": round(sum(r["cap_yi"] for r in future if r["date"] <= in7), 2),
+        "next30_yi": round(sum(r["cap_yi"] for r in future), 2),
+        "past30_yi": round(sum(r["cap_yi"] for r in past), 2),
+        "next30_count": sum(r["count"] or 0 for r in future),
+        "top_days": top, "future": future, "source": res.source,
+        "how": "按当前股价估算的实际可流通市值（亿元）。解禁集中的日子前后，相关个股常有抛压；"
+               "未来 30 日明显高于过去 30 日时，供给端压力在上升",
+    }
+
+
 def _components(val: list[dict], erp: dict, turnover: dict, margin: dict, mbuy: dict) -> list[dict]:
     """温度分的组成：每项给出当前值、分位和 heat（0~100，越高越热）。"""
     v300, vall = val[0], val[1]
@@ -898,12 +1008,14 @@ async def overview(force: bool = False) -> dict[str, Any]:
     gaps: list[str] = []
     v300, vall = VALUATION_INDEXES
     # 所有原始数据互不依赖，并发拉取；单项失败以异常对象返回，不拖垮整页
-    (pe300, peall, pb300, pball, eva_res, bond_res, th, margin_res, etf, fut, basis, style) = await asyncio.gather(
+    (pe300, peall, pb300, pball, eva_res, bond_res, th, margin_res, etf, fut, basis, style,
+     south_res, ah_res, lift_res) = await asyncio.gather(
         pe_series(v300, force), pe_series(vall, force), pb_series(v300, force), pb_series(vall, force),
         eva_snapshot(force), bond_series(force),
         market.turnover_history(days=MACRO_PARAMS["flow_days"], force=force),
         margin_series(force), etf_flows(force), futures_positions(force),
         futures_basis(force), style_ratios(force),
+        southbound_series(force), ah_series(force), lift_schedule(force),
         return_exceptions=True,
     )
     eva = eva_res.data if isinstance(eva_res, cache.Sourced) and eva_res.data else {}
@@ -945,6 +1057,9 @@ async def overview(force: bool = False) -> dict[str, Any]:
     if div_yield is None:
         gaps.append("中证红利股息率：蛋卷不可用，红利股息率差无法计算")
 
+    south = _south_block(south_res, gaps)
+    ah = _ah_block(ah_res, gaps)
+    lift = _lift_block(lift_res, gaps)
     components = _components(valuation, erp, turnover, margin, mbuy)
     payload: dict[str, Any] = {
         "as_of": str(last_trade_day()),
@@ -957,6 +1072,8 @@ async def overview(force: bool = False) -> dict[str, Any]:
         "flows": {"turnover": turnover, "margin": margin, "margin_buy": mbuy},
         "basis": basis,
         "style": style,
+        "cross": {"south": south, "ah": ah},
+        "lift": lift,
         "etf": etf,
         "futures": fut,
         "gaps": gaps,
@@ -969,6 +1086,7 @@ async def overview(force: bool = False) -> dict[str, Any]:
                 "bond": getattr(bond_res, "source", "none"), "margin": getattr(margin_res, "source", "none"),
                 "turnover": turnover.get("source"), "etf": etf.get("source"), "futures": fut.get("source"),
                 "basis": basis.get("source"), "style": style.get("source"),
+                "south": south.get("source"), "ah": ah.get("source"), "lift": lift.get("source"),
             },
             "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
             "cached": False, "offline": settings.offline,
@@ -1073,6 +1191,30 @@ async def probe() -> dict[str, Any]:
             d = prev_trade_day(d)
         return {"rows": 0, "error": "最近 5 个交易日都没取到股指期货日行情（每日 CSV 与月度 zip 均失败）"}
 
+    async def p_south() -> dict:
+        raw = await em.datacenter("RPT_MUTUAL_DEAL_HISTORY", filter_='(MUTUAL_TYPE="006")',
+                                  sort_columns="TRADE_DATE", page_size=5)
+        rows = em.parse_southbound(raw)
+        return {"rows": len(rows), "sample": rows[-1] if rows else None,
+                "missing_fields": [k for k in ("TRADE_DATE", "NET_DEAL_AMT") if raw and k not in raw[0]]}
+
+    async def p_ah() -> dict:
+        em_rows = await em.kline("100.HSAHP", 101, 1, 5)
+        tx_rows = [] if em_rows else await tencent.kline("hkHSAHP", "day", 5)
+        rows = em_rows or tx_rows
+        return {"rows": len(rows), "source": "eastmoney" if em_rows else ("tencent" if tx_rows else "none"),
+                "sample": rows[-1][:3] if rows else None}
+
+    async def p_lift() -> dict:
+        today = now_cn().date()
+        raw = await em.datacenter(
+            "RPT_LIFTDAY_STA", sort_columns="FREE_DATE", sort_types="1", page_size=5,
+            filter_=f"(INDEX_CODE=\"000300\")(FREE_DATE>='{today}')(FREE_DATE<='{today + dt.timedelta(days=30)}')")
+        rows = em.parse_lift_days(raw)
+        # 字段名没有文档，把原始字段列出来便于核对按列序取值是否取对了
+        return {"rows": len(rows), "sample": rows[0] if rows else None, "show_keys": True,
+                "raw_keys": list(raw[0].keys())[:12] if raw else []}
+
     items = await asyncio.gather(
         _probe("中证指数 index-perf（PE 主源）", p_csindex()),
         _probe("蛋卷 估值列表（股息率）", p_danjuan_list()),
@@ -1083,6 +1225,9 @@ async def probe() -> dict[str, Any]:
         _probe("东财 两融余额", p_margin()),
         _probe("中金所 股指期货持仓排名", p_cffex()),
         _probe("中金所 股指期货日行情（基差）", p_cffex_daily()),
+        _probe("东财 南向资金", p_south()),
+        _probe("AH 溢价指数（东财 / 腾讯）", p_ah()),
+        _probe("东财 限售股解禁", p_lift()),
     )
     return {"offline": False, "items": list(items),
             "source_stats": {k: http.SOURCE_STATS.get(k) for k in ("csindex", "danjuan", "eastmoney", "sse", "cffex")}}

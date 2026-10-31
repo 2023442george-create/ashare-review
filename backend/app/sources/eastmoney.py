@@ -287,3 +287,64 @@ async def treasury_yield_legacy(pages: int = 6, page_size: int = 500) -> list[di
         if len(batch) < page_size:
             break
     return parse_treasury(rows)
+
+
+# ---------------- 南向资金（港股通） ----------------
+async def southbound_history(days: int = 250) -> list[list]:
+    """南向资金（港股通沪+深合计）每日成交净买额 → [[date, 净买入(亿元)], ...] 升序。
+
+    MUTUAL_TYPE="006" 是南向合计；NET_DEAL_AMT 单位为百万元。
+    北向每日净买入已于 2024-08 停发，但南向仍每日公布。
+    """
+    rows = await datacenter("RPT_MUTUAL_DEAL_HISTORY", filter_='(MUTUAL_TYPE="006")',
+                            sort_columns="TRADE_DATE", sort_types="-1", page_size=days)
+    return parse_southbound(rows)
+
+
+def parse_southbound(rows: list[dict]) -> list[list]:
+    """净买额为空（港股休市、单边休市）的日子跳过，不按 0 计。"""
+    out = []
+    for r in rows or []:
+        d = str(r.get("TRADE_DATE") or "")[:10]
+        v = fnum(r.get("NET_DEAL_AMT"))
+        if d and v is not None:
+            out.append([d, round(v / 100, 2)])
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+# ---------------- 限售股解禁（按日汇总） ----------------
+LIFT_CAP_KEYS = ("ACTUAL_FREE_MARKET_CAP", "FREE_MARKET_CAP", "LIFT_MARKET_CAP")
+LIFT_NUM_KEYS = ("LIFT_NUM", "FREE_NUM", "STOCK_NUM")
+
+
+def parse_lift_days(rows: list[dict]) -> list[dict]:
+    """解析每日解禁汇总 → [{date, count, cap_yi}]（升序）。
+
+    字段名没有公开文档：先按候选名取，取不到时按列序取（第 2 列家数、第 4 列实际解禁市值，
+    与东财页面表头顺序一致）。实际解禁市值单位为万元。
+    """
+    out = []
+    for r in rows or []:
+        keys = list(r.keys())
+        d = str(r.get("FREE_DATE") or (r.get(keys[0]) if keys else "") or "")[:10]
+        cap_key = next((k for k in LIFT_CAP_KEYS if k in r), None) or (keys[3] if len(keys) > 3 else None)
+        num_key = next((k for k in LIFT_NUM_KEYS if k in r), None) or (keys[1] if len(keys) > 1 else None)
+        cap = fnum(r.get(cap_key)) if cap_key else None
+        if not d or cap is None:
+            continue
+        num = fnum(r.get(num_key)) if num_key else None
+        out.append({"date": d, "count": int(num) if num is not None else None, "cap_yi": round(cap / 1e4, 2)})
+    out.sort(key=lambda x: x["date"])
+    return out
+
+
+async def lift_days(start: str, end: str) -> list[dict]:
+    """[start, end]（YYYY-MM-DD）期间每天的限售股解禁家数与实际解禁市值（全部 A 股）。"""
+    rows = await datacenter(
+        "RPT_LIFTDAY_STA",
+        filter_=f"(INDEX_CODE=\"000300\")(FREE_DATE>='{start}')(FREE_DATE<='{end}')",
+        sort_columns="FREE_DATE", sort_types="1", page_size=500,
+    )
+    return parse_lift_days(rows)
+
