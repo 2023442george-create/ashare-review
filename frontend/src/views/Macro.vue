@@ -140,11 +140,17 @@
       <div class="grid" style="grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
         <div class="stat" v-for="v in futVars" :key="v.code" :class="{ hl: futSel === v.code }"
              style="cursor:pointer" @click="futSel = v.code">
-          <div class="k">{{ v.code }} · {{ v.index }}</div>
+          <div class="k">{{ v.code }} · {{ v.index }}股指期货</div>
           <div class="v mono" :class="cls(v.net)" style="font-size:18px">{{ signed(v.net, 0) }}</div>
           <div class="d tiny">净持仓（手），较前日 <span :class="cls(v.net_chg)">{{ signed(v.net_chg, 0) }}</span></div>
           <div class="d tiny dim">多 {{ num(v.long, 0) }}（{{ signed(v.long_chg, 0) }}） / 空 {{ num(v.short, 0) }}（{{ signed(v.short_chg, 0) }}）</div>
         </div>
+      </div>
+      <!-- 品种对照：代码 → 现货指数 → 每点价值，换算一手合约金额用 -->
+      <div class="row-wrap small" style="gap:6px;margin-bottom:10px">
+        <span class="chip" v-for="f in FUT_INFO" :key="f.code">
+          <b>{{ f.code }}</b> = {{ f.index }}股指期货 · 每点 {{ f.mult }} 元（一手 ≈ 指数点位 × {{ f.mult }}）
+        </span>
       </div>
       <div class="grid" style="grid-template-columns:1fr 1.2fr">
         <div>
@@ -153,7 +159,7 @@
         </div>
         <div>
           <div class="small muted" style="margin-bottom:4px">
-            {{ futCur.code }} 主要会员（{{ futCur.date || '—' }}，合约 {{ (futCur.contracts || []).join(' / ') }}）
+            {{ futCur.code }}（{{ futCur.index }}）主要会员（{{ futCur.date || '—' }}，合约 {{ (futCur.contracts || []).join(' / ') }}）
           </div>
           <div class="scroll-y" style="max-height:270px">
             <table class="tbl">
@@ -328,10 +334,14 @@ const flowOpt = computed(() => timeOpt([
   ln('成交额20日均值', turnover.value.series || [], '#ffb020'),
   ln('两融余额', margin.value.series || [], '#a97bff', { yAxisIndex: 1 }),
 ], [yVal('成交额(亿)'), yVal('两融(亿)', { splitLine: { show: false } })]))
-// 股指期货：四个品种前20会员合计净持仓
+// 股指期货：品种对照表（中金所合约乘数）与四个品种前20会员合计净持仓
+const FUT_INFO = [
+  { code: 'IF', index: '沪深300', mult: 300 }, { code: 'IH', index: '上证50', mult: 300 },
+  { code: 'IC', index: '中证500', mult: 200 }, { code: 'IM', index: '中证1000', mult: 200 },
+]
 const FUT_COLORS = ['#ff7a45', '#ffb020', '#4c9aff', '#a97bff']
 const futOpt = computed(() => timeOpt(futVars.value.map((v, i) =>
-  ln(v.code, (v.history || []).map(r => [r[0], r[3]]), FUT_COLORS[i % 4], { showSymbol: true, symbolSize: 3 })), yVal('手')))
+  ln(`${v.code} ${v.index}`, (v.history || []).map(r => [r[0], r[3]]), FUT_COLORS[i % 4], { showSymbol: true, symbolSize: 3 })), yVal('手')))
 // 温度历史：0~100，20/80 两条档位线
 const histOpt = computed(() => timeOpt([ln('温度分', hist.value.map(r => [r.trade_date, r.score]), '#ff7a45', {
   showSymbol: true, symbolSize: 4,
