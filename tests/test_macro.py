@@ -129,6 +129,38 @@ class ParserTests(unittest.TestCase):
         self.assertAlmostEqual(snap["510300"]["shares_yi"], 456.789, places=3)   # 万份 → 亿份
 
 
+class FuturesPositionTests(unittest.TestCase):
+    CSV = "\n".join([
+        "交易日,合约,排名,成交量排名,,,持买单量排名,,,持卖单量排名,,",
+        ",,,会员简称,成交量,比上交易日增减,会员简称,持买单量,比上交易日增减,会员简称,持卖单量,比上交易日增减",
+        "20261030,IF2511,1,中信期货,9000,100,中信期货,20000,500,中信期货,30000,1500",
+        "20261030,IF2511,2,国泰君安,8000,-50,国泰君安,10000,-200,海通期货,12000,300",
+        "20261030,IF2512,1,中信期货,3000,20,中信期货,5000,100,中信期货,8000,-400",
+        "20261030,IF2512,2,海通期货,1000,10,海通期货,2000,--,国泰君安,1000,0",
+        "合计,,,,,,,,,,,",
+    ])
+
+    def test_parse_skips_headers_and_totals(self):
+        from app.sources import cffex
+        rows = cffex.parse_rank_csv(self.CSV)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(rows[0]["contract"], "IF2511")
+        self.assertEqual(rows[0]["short"], 30000)
+        self.assertIsNone(rows[3]["long_chg"])          # "--" 是缺失，不是 0
+
+    def test_aggregate_sums_member_across_contracts(self):
+        from app.sources import cffex
+        agg = macro.aggregate_positions(cffex.parse_rank_csv(self.CSV))
+        citic = next(m for m in agg["members"] if m["name"] == "中信期货")
+        self.assertEqual(citic["long"], 25000)
+        self.assertEqual(citic["short"], 38000)
+        self.assertEqual(citic["net"], -13000)
+        self.assertEqual(citic["net_chg"], 600 - 1100)  # 多单 +600，空单 +1100
+        self.assertEqual(agg["long"], 37000)
+        self.assertEqual(agg["contracts"], ["IF2511", "IF2512"])
+        self.assertEqual(agg["members"][0]["name"], "中信期货")   # 按净持仓绝对值排序
+
+
 class OverviewTests(unittest.TestCase):
     def setUp(self):
         self._offline, self._retries = settings.offline, settings.max_retries
@@ -147,6 +179,9 @@ class OverviewTests(unittest.TestCase):
         self.assertTrue(all(v in ("mock", None) or "mock" in str(v) for v in res["meta"]["sources"].values()))
         self.assertIsNotNone(res["erp"]["erp_pct"])
         self.assertTrue(res["etf"]["items"])
+        fut = res["futures"]["varieties"]
+        self.assertEqual([v["code"] for v in fut], ["IF", "IH", "IC", "IM"])
+        self.assertEqual(len(fut[0]["history"]), macro.MACRO_PARAMS["futures_days"])
         # 离线样例不能落库，否则会污染温度历史曲线
         self.assertEqual(store.load_macro_history(10), [])
 

@@ -11,6 +11,7 @@
 - 红利股息率差 = 中证红利股息率 − 10 年期国债收益率
 - 成交额 20 日均值分位、两融余额分位（近约 2 年）
 - 宽基 ETF 份额变化（上交所口径）
+- 股指期货（IF/IH/IC/IM）前 20 会员多空持仓及其变化（中金所口径，不计入温度分）
 - 宏观温度分：上述分位等权平均（ERP 取反向）
 
 与项目其它部分一致的三条约束：
@@ -30,7 +31,7 @@ from typing import Any
 from ..core import cache, store
 from ..core.config import settings
 from ..core.utils import fnum, last_trade_day, now_cn, prev_trade_day, to_date, yi
-from ..sources import csindex, danjuan, sse
+from ..sources import cffex, csindex, danjuan, sse
 from ..sources import eastmoney as em
 
 # 宏观参数刻意不放进 core/params.py：那里的参数指纹会写进结果账本，
@@ -44,6 +45,8 @@ MACRO_PARAMS: dict[str, Any] = {
     "min_components": 3,       # 温度分至少需要几个组件才输出
     "etf_lags": (1, 5, 20),    # ETF 份额对比的交易日间隔
     "etf_lookback": 4,         # 某日 ETF 份额未公布时最多往前回退几个交易日
+    "futures_days": 20,        # 股指期货会员持仓取最近多少个交易日画趋势
+    "futures_top_members": 12, # 每个品种列出净持仓绝对值最大的前几名会员
 }
 
 # 温度分档位：(上限, 名称, 解读)
@@ -226,6 +229,38 @@ def etf_changes(latest: dict[str, dict], lagged: dict[int, dict[str, dict]]) -> 
     return {"items": rows, "groups": out_groups}
 
 
+def aggregate_positions(rows: list[dict]) -> dict[str, Any]:
+    """把某品种某日"按合约分别排名"的前 20 数据汇总成品种级 + 会员级多空持仓。
+
+    口径说明（界面会照抄）：
+    - 合计 = 各合约前 20 名持仓之和，不是全市场持仓
+    - 会员持仓 = 该会员在各合约上榜持仓之和；某合约没进前 20 的部分看不到
+    - 增减用交易所给的"比上交易日增减"，不是两天合计相减——
+      会员掉出前 20 时，合计相减会把"看不到"误算成"平仓"
+    缺失的数字跳过，不按 0 计。
+    """
+    tot = {"long": 0, "short": 0, "long_chg": 0, "short_chg": 0}
+    members: dict[str, dict[str, int]] = {}
+    contracts: set[str] = set()
+    for r in rows:
+        contracts.add(r["contract"])
+        for side in ("long", "short"):
+            name, v, chg = r.get(f"{side}_name"), r.get(side), r.get(f"{side}_chg")
+            if not name or v is None:
+                continue
+            m = members.setdefault(name, {"long": 0, "short": 0, "long_chg": 0, "short_chg": 0})
+            m[side] += v
+            tot[side] += v
+            if chg is not None:
+                m[f"{side}_chg"] += chg
+                tot[f"{side}_chg"] += chg
+    items = [{"name": n, **m, "net": m["long"] - m["short"], "net_chg": m["long_chg"] - m["short_chg"]}
+             for n, m in members.items()]
+    items.sort(key=lambda x: abs(x["net"]), reverse=True)
+    return {**tot, "net": tot["long"] - tot["short"], "net_chg": tot["long_chg"] - tot["short_chg"],
+            "contracts": sorted(contracts), "members": items}
+
+
 # =====================================================================
 # 离线样例：只在 REVIEW_OFFLINE=1 时启用（cache.filter_providers 保证）
 # =====================================================================
@@ -269,6 +304,21 @@ def _mock_etf(lag: int) -> dict[str, dict]:
     base = {"510300": 420, "510310": 380, "510330": 260, "510050": 300,
             "510500": 120, "512100": 90, "588000": 500, "512050": 210}
     return {c: {"name": None, "shares_yi": round(v * (1 - 0.004 * lag), 4)} for c, v in base.items()}
+
+
+def _mock_cffex(variety: str, date: str, lag: int) -> list[dict]:
+    """样例持仓排名：几家会员在两个合约上的多空单，lag 越大空单越少（模拟加空）。"""
+    names = ["中信期货", "国泰君安", "海通期货", "华泰期货", "东证期货", "银河期货"]
+    base = {"IF": 30000, "IH": 12000, "IC": 25000, "IM": 28000}[variety]
+    rows = []
+    for ci, contract in enumerate((f"{variety}2511", f"{variety}2512")):
+        for i, n in enumerate(names):
+            lg = int(base * (0.5 - 0.06 * i) * (0.4 if ci else 1))
+            sh = int(base * (0.7 - 0.07 * i) * (0.4 if ci else 1) * (1 - 0.004 * lag))
+            rows.append({"date": date, "contract": contract, "rank": i + 1, "vol_name": n, "vol": lg, "vol_chg": 0,
+                         "long_name": n, "long": lg, "long_chg": int(lg * 0.01),
+                         "short_name": n, "short": sh, "short_chg": int(sh * 0.004)})
+    return rows
 
 
 def _mock_margin() -> list[list]:
@@ -391,6 +441,68 @@ async def etf_flows(force: bool = False) -> dict[str, Any]:
         dates[f"{lag}d"] = d
     out = {**etf_changes(latest, lagged), "date": latest_date, "dates": dates, "source": src,
            "coverage": ETF_COVERAGE_NOTE}
+    cache.cache_set(key, out, settings.ttl_macro)
+    return out
+
+
+async def _cffex_rows(d: dt.date, variety: str, lag: int) -> list[dict]:
+    """某日某品种的排名行；离线模式返回样例。"""
+    if settings.offline:
+        return _mock_cffex(variety, d.strftime("%Y-%m-%d"), lag)
+    return await cffex.rank(d.strftime("%Y-%m-%d"), variety)
+
+
+async def futures_positions(force: bool = False) -> dict[str, Any]:
+    """股指期货前 20 会员多空持仓：最新一日的品种/会员明细 + 最近 N 个交易日的合计趋势。"""
+    key = "macro:futures"
+    if not force:
+        hit = cache.cache_get(key)
+        if hit is not None:
+            return hit
+    # 1) 定位最新一个已公布的交易日：当天 16:30 前还没出数，往前找
+    d = last_trade_day()
+    latest: dt.date | None = None
+    for _ in range(5):
+        if await _cffex_rows(d, "IF", 0):
+            latest = d
+            break
+        d = prev_trade_day(d)
+    if latest is None:
+        return {"varieties": [], "date": None, "source": "none",
+                "error": "中金所持仓排名接口无数据或不可达"}
+    # 2) 以最新日为终点往前取 N 个交易日
+    days = [latest]
+    while len(days) < MACRO_PARAMS["futures_days"]:
+        days.append(prev_trade_day(days[-1]))
+    days.reverse()
+    pairs = [(v, i, day) for v in cffex.VARIETIES for i, day in enumerate(days)]
+    # 3) 品种 × 日期互不依赖，并发拉取（并发度由 http 层的信号量限制）
+    results = await asyncio.gather(*[_cffex_rows(day, v, len(days) - 1 - i) for v, i, day in pairs],
+                                   return_exceptions=True)
+    by_var: dict[str, dict[str, list[dict]]] = {v: {} for v in cffex.VARIETIES}
+    for (v, _i, day), rows in zip(pairs, results):
+        if isinstance(rows, list) and rows:
+            by_var[v][day.strftime("%Y-%m-%d")] = rows
+    varieties = []
+    for v, index_name in cffex.VARIETIES.items():
+        daily = by_var[v]
+        if not daily:
+            varieties.append({"code": v, "index": index_name, "date": None, "members": [], "history": []})
+            continue
+        last_day = max(daily)
+        agg = aggregate_positions(daily[last_day])
+        history = []
+        for day in sorted(daily):
+            a = aggregate_positions(daily[day])
+            history.append([day, a["long"], a["short"], a["net"]])
+        varieties.append({"code": v, "index": index_name, "date": last_day,
+                          **{k: agg[k] for k in ("long", "short", "net", "long_chg", "short_chg", "net_chg", "contracts")},
+                          "members": agg["members"][:MACRO_PARAMS["futures_top_members"]], "history": history})
+    out = {"varieties": varieties, "date": latest.strftime("%Y-%m-%d"), "days": len(days),
+           "source": "mock" if settings.offline else "cffex",
+           "how": ("股指期货空单大多是持有股票的机构在做套期保值，前 20 会员长期净空是常态；"
+                   "要看的是变化：净空单短期快速增加 = 机构在加对冲或看空，快速减少 = 撤对冲、风险偏好回升"),
+           "caliber": "合计为各合约前 20 名之和（非全市场）；增减取交易所公布的比上交易日增减"}
     cache.cache_set(key, out, settings.ttl_macro)
     return out
 
@@ -549,11 +661,11 @@ async def overview(force: bool = False) -> dict[str, Any]:
     gaps: list[str] = []
     v300, vall = VALUATION_INDEXES
     # 所有原始数据互不依赖，并发拉取；单项失败以异常对象返回，不拖垮整页
-    (pe300, peall, pb300, pball, eva_res, bond_res, th, margin_res, etf) = await asyncio.gather(
+    (pe300, peall, pb300, pball, eva_res, bond_res, th, margin_res, etf, fut) = await asyncio.gather(
         pe_series(v300, force), pe_series(vall, force), pb_series(v300, force), pb_series(vall, force),
         eva_snapshot(force), bond_series(force),
         market.turnover_history(days=MACRO_PARAMS["flow_days"], force=force),
-        margin_series(force), etf_flows(force),
+        margin_series(force), etf_flows(force), futures_positions(force),
         return_exceptions=True,
     )
     eva = eva_res.data if isinstance(eva_res, cache.Sourced) and eva_res.data else {}
@@ -570,6 +682,11 @@ async def overview(force: bool = False) -> dict[str, Any]:
         etf = {"items": [], "groups": [], "error": f"{type(etf).__name__}: {etf}", "coverage": ETF_COVERAGE_NOTE}
     if not etf.get("items") or all(r.get("shares_yi") is None for r in etf.get("items") or []):
         gaps.append("宽基 ETF 份额：" + (etf.get("error") or "无数据"))
+
+    if isinstance(fut, Exception):
+        fut = {"varieties": [], "error": f"{type(fut).__name__}: {fut}"}
+    if not any(v.get("date") for v in fut.get("varieties") or []):
+        gaps.append("股指期货会员持仓：" + (fut.get("error") or "无数据"))
 
     # 红利股息率差：中证红利股息率 − 10 年国债（只有当前值，暂无历史分位）
     div_yield = (eva.get(DIVIDEND_INDEX["dj"]) or {}).get("dividend_yield")
@@ -591,6 +708,7 @@ async def overview(force: bool = False) -> dict[str, Any]:
         "dividend": dividend,
         "flows": {"turnover": turnover, "margin": margin},
         "etf": etf,
+        "futures": fut,
         "gaps": gaps,
         "params": {k: v for k, v in MACRO_PARAMS.items() if not isinstance(v, tuple)},
         "disclaimer": "温度分是各指标历史分位的等权平均，属于经验规则，没有经过择时回测验证",
@@ -599,7 +717,7 @@ async def overview(force: bool = False) -> dict[str, Any]:
                 "pe_csi300": getattr(pe300, "source", "none"), "pe_csiall": getattr(peall, "source", "none"),
                 "pb": getattr(pb300, "source", "none"), "eva": getattr(eva_res, "source", "none"),
                 "bond": getattr(bond_res, "source", "none"), "margin": getattr(margin_res, "source", "none"),
-                "turnover": turnover.get("source"), "etf": etf.get("source"),
+                "turnover": turnover.get("source"), "etf": etf.get("source"), "futures": fut.get("source"),
             },
             "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
             "cached": False, "offline": settings.offline,
@@ -682,6 +800,18 @@ async def probe() -> dict[str, Any]:
         rows = await em.margin_history(5)
         return {"rows": len(rows), "sample": {k: rows[0].get(k) for k in ("DIM_DATE", "RZRQYE")} if rows else None}
 
+    async def p_cffex() -> dict:
+        d = last_trade_day()
+        for _ in range(5):          # 当天 16:30 前未公布，往前找
+            rows = await cffex.rank(d.strftime("%Y-%m-%d"), "IF")
+            if rows:
+                agg = aggregate_positions(rows)
+                return {"rows": len(rows), "date": d.strftime("%Y-%m-%d"),
+                        "sample": {"合约数": len(agg["contracts"]), "多单合计": agg["long"], "空单合计": agg["short"],
+                                   "第一名": rows[0].get("long_name")}}
+            d = prev_trade_day(d)
+        return {"rows": 0, "error": "最近 5 个交易日都没取到 IF 持仓排名"}
+
     items = await asyncio.gather(
         _probe("中证指数 index-perf（PE 主源）", p_csindex()),
         _probe("蛋卷 估值列表（股息率）", p_danjuan_list()),
@@ -690,6 +820,7 @@ async def probe() -> dict[str, Any]:
         _probe("东财 国债收益率（旧版备用）", p_bond_legacy()),
         _probe("上交所 ETF 份额", p_sse()),
         _probe("东财 两融余额", p_margin()),
+        _probe("中金所 股指期货持仓排名", p_cffex()),
     )
     return {"offline": False, "items": list(items),
-            "source_stats": {k: http.SOURCE_STATS.get(k) for k in ("csindex", "danjuan", "eastmoney", "sse")}}
+            "source_stats": {k: http.SOURCE_STATS.get(k) for k in ("csindex", "danjuan", "eastmoney", "sse", "cffex")}}

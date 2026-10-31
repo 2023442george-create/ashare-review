@@ -134,6 +134,46 @@
       </details>
     </Panel>
 
+    <!-- 股指期货前 20 会员多空持仓：大机构在期货端怎么站队 -->
+    <Panel title="股指期货会员持仓" :sub="futSub" :loading="loading" :empty="!futVars.some(v => v.date)"
+           :empty-text="fut.error || '暂无持仓排名数据'">
+      <div class="grid" style="grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
+        <div class="stat" v-for="v in futVars" :key="v.code" :class="{ hl: futSel === v.code }"
+             style="cursor:pointer" @click="futSel = v.code">
+          <div class="k">{{ v.code }} · {{ v.index }}</div>
+          <div class="v mono" :class="cls(v.net)" style="font-size:18px">{{ signed(v.net, 0) }}</div>
+          <div class="d tiny">净持仓（手），较前日 <span :class="cls(v.net_chg)">{{ signed(v.net_chg, 0) }}</span></div>
+          <div class="d tiny dim">多 {{ num(v.long, 0) }}（{{ signed(v.long_chg, 0) }}） / 空 {{ num(v.short, 0) }}（{{ signed(v.short_chg, 0) }}）</div>
+        </div>
+      </div>
+      <div class="grid" style="grid-template-columns:1fr 1.2fr">
+        <div>
+          <div class="small muted" style="margin-bottom:4px">前20会员合计净持仓趋势（负数 = 净空）</div>
+          <EChart :option="futOpt" :height="260" />
+        </div>
+        <div>
+          <div class="small muted" style="margin-bottom:4px">
+            {{ futCur.code }} 主要会员（{{ futCur.date || '—' }}，合约 {{ (futCur.contracts || []).join(' / ') }}）
+          </div>
+          <div class="scroll-y" style="max-height:270px">
+            <table class="tbl">
+              <thead><tr><th>会员</th><th class="num">多单(增减)</th><th class="num">空单(增减)</th><th class="num">净持仓(增减)</th></tr></thead>
+              <tbody>
+                <tr v-for="m in (futCur.members || [])" :key="m.name">
+                  <td :style="m.name.includes('中信') ? 'color:#ffb020;font-weight:700' : ''">{{ m.name }}</td>
+                  <td class="num mono">{{ num(m.long, 0) }} <span class="small" :class="cls(m.long_chg)">({{ signed(m.long_chg, 0) }})</span></td>
+                  <td class="num mono">{{ num(m.short, 0) }} <span class="small" :class="cls(-m.short_chg)">({{ signed(m.short_chg, 0) }})</span></td>
+                  <td class="num mono" :class="cls(m.net)">{{ signed(m.net, 0) }}
+                    <span class="small" :class="cls(m.net_chg)">({{ signed(m.net_chg, 0) }})</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="small muted" style="line-height:1.7;margin-top:8px">{{ fut.how }}<div class="dim">口径：{{ fut.caliber }}</div></div>
+    </Panel>
+
     <!-- 缺口与探针：缺什么、为什么缺，一键核对每个源 -->
     <Panel title="数据缺口与接口核对" sub="缺失项不计入温度分，也不会用 0 或样例值代替">
       <template #extra>
@@ -197,6 +237,10 @@ const turnover = computed(() => (d.value.flows || {}).turnover || {})
 const margin = computed(() => (d.value.flows || {}).margin || {})
 const etf = computed(() => d.value.etf || {})
 const gaps = computed(() => d.value.gaps || [])
+const fut = computed(() => d.value.futures || {})
+const futVars = computed(() => fut.value.varieties || [])
+const futSel = ref('IF')                       // 当前查看会员明细的品种
+const futCur = computed(() => futVars.value.find(v => v.code === futSel.value) || {})
 
 // ---------- 文案格式化 ----------
 /** 百分数（不带正负号），缺失显示 — */
@@ -216,6 +260,10 @@ const etfSub = computed(() => {
   const e = etf.value
   const ds = e.dates || {}
   return `统计日 ${e.date || '—'}（对比 ${ds['1d'] || '—'} / ${ds['5d'] || '—'} / ${ds['20d'] || '—'}）；${e.coverage || ''}`
+})
+const futSub = computed(() => {
+  const f = fut.value
+  return f.date ? `中金所 ${f.date}，近 ${f.days} 个交易日；点卡片切换品种` : '中金所每日 16:30 左右公布'
 })
 /** 探针一行的详情：优先显示错误，其次缺失字段/代码，最后是样例值 */
 function probeDetail(p) {
@@ -280,6 +328,10 @@ const flowOpt = computed(() => timeOpt([
   ln('成交额20日均值', turnover.value.series || [], '#ffb020'),
   ln('两融余额', margin.value.series || [], '#a97bff', { yAxisIndex: 1 }),
 ], [yVal('成交额(亿)'), yVal('两融(亿)', { splitLine: { show: false } })]))
+// 股指期货：四个品种前20会员合计净持仓
+const FUT_COLORS = ['#ff7a45', '#ffb020', '#4c9aff', '#a97bff']
+const futOpt = computed(() => timeOpt(futVars.value.map((v, i) =>
+  ln(v.code, (v.history || []).map(r => [r[0], r[3]]), FUT_COLORS[i % 4], { showSymbol: true, symbolSize: 3 })), yVal('手')))
 // 温度历史：0~100，20/80 两条档位线
 const histOpt = computed(() => timeOpt([ln('温度分', hist.value.map(r => [r.trade_date, r.score]), '#ff7a45', {
   showSymbol: true, symbolSize: 4,
