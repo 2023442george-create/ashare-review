@@ -178,6 +178,54 @@ class FuturesPositionTests(unittest.TestCase):
         self.assertEqual(agg["members"][0]["name"], "中信期货")   # 按净持仓绝对值排序
 
 
+class GroupAIndicatorTests(unittest.TestCase):
+    def test_third_friday_and_expiry(self):
+        from app.sources import cffex
+        import datetime as dt
+        self.assertEqual(cffex.third_friday(2026, 12), dt.date(2026, 12, 18))
+        self.assertEqual(cffex.contract_expiry("IF2611"), dt.date(2026, 11, 20))
+        self.assertIsNone(cffex.contract_expiry("IO2611-C-4000"))
+
+    def test_basis_and_annualization(self):
+        import datetime as dt
+        b = macro.basis_item(3960.0, 4000.0, dt.date(2026, 12, 18), dt.date(2026, 11, 18))
+        self.assertEqual(b["basis_pct"], -1.0)
+        self.assertEqual(b["days"], 30)
+        self.assertEqual(b["annual_pct"], round(-1.0 * 365 / 30, 2))
+
+    def test_no_annualization_near_expiry(self):
+        """两天到期的合约，0.1% 的基差年化成 18% 毫无意义，必须不给。"""
+        import datetime as dt
+        b = macro.basis_item(3996.0, 4000.0, dt.date(2026, 11, 20), dt.date(2026, 11, 18))
+        self.assertIsNotNone(b["basis_pct"])
+        self.assertIsNone(b["annual_pct"])
+
+    def test_daily_csv_keeps_only_stock_index_futures(self):
+        from app.sources import cffex
+        text = "\n".join([
+            "合约代码,今开盘,最高价,最低价,成交量,成交金额,持仓量,持仓变化,今收盘,今结算,前结算,涨跌1,涨跌2",
+            "IF2611,3990,4010,3980,50000,600000,120000,500,3995.2,3996.0,3980,15,16",
+            "IF2612,3980,4000,3970,10000,120000,80000,300,3985.0,3986.0,3970,15,16",
+            "IO2611-C-4000,50,60,40,100,10,200,5,55,56,50,5,6",
+            "T2612,108,109,107,100,10,200,5,108.5,108.6,108,0.5,0.6",
+            "小计,,,,,,,,,,,,",
+        ])
+        rows = cffex.parse_daily_csv(text)
+        self.assertEqual([r["contract"] for r in rows], ["IF2611", "IF2612"])
+        self.assertEqual(rows[0]["open_interest"], 120000)
+        self.assertEqual(rows[0]["close"], 3995.2)
+
+    def test_ratio_series_aligns_on_dates(self):
+        a = [["2026-10-28", 0, 10.0], ["2026-10-29", 0, 12.0], ["2026-10-30", 0, 11.0]]
+        b = [["2026-10-29", 0, 4.0], ["2026-10-30", 0, 0]]          # 10-30 分母为 0 → 跳过
+        self.assertEqual(macro.ratio_series(a, b), [["2026-10-29", 3.0]])
+
+    def test_margin_buy_ratio(self):
+        rows = [["2026-10-29", 1.8e12, 1.0e11], ["2026-10-30", 1.8e12, None]]
+        th = [{"date": "2026-10-29", "amount": 1.25e12}, {"date": "2026-10-30", "amount": 1.3e12}]
+        self.assertEqual(macro.margin_buy_ratio(rows, th), [["2026-10-29", 8.0]])
+
+
 class OverviewTests(unittest.TestCase):
     def setUp(self):
         self._offline, self._retries = settings.offline, settings.max_retries
@@ -195,9 +243,15 @@ class OverviewTests(unittest.TestCase):
         self.assertIsNotNone(t["score"])
         self.assertEqual(t["score"], round((t["valuation"]["score"] + t["flow"]["score"]) / 2, 1))
         self.assertEqual(t["valuation"]["used"], 3)
+        self.assertEqual(t["flow"]["total"], 3)          # 成交额、融资买入占比、两融余额
         self.assertTrue(all(v in ("mock", None) or "mock" in str(v) for v in res["meta"]["sources"].values()))
         self.assertIsNotNone(res["erp"]["erp_pct"])
         self.assertTrue(res["etf"]["items"])
+        self.assertEqual(len(res["basis"]["items"]), 4)
+        self.assertTrue(all(i["annual_pct"] is not None and i["annual_pct"] < 0 for i in res["basis"]["items"]))
+        self.assertIsNotNone(res["rates"]["term_spread"])
+        self.assertIsNotNone(res["flows"]["margin_buy"]["ratio"])
+        self.assertEqual(len(res["style"]["items"]), 2)
         fut = res["futures"]["varieties"]
         self.assertEqual([v["code"] for v in fut], ["IF", "IH", "IC", "IM"])
         self.assertEqual(len(fut[0]["history"]), macro.MACRO_PARAMS["futures_days"])

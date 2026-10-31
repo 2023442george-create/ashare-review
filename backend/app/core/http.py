@@ -120,8 +120,9 @@ async def fetch(
     retries: int | None = None,
     method: str = "GET",
     json_body: Any = None,
-) -> str | None:
-    """返回文本；失败返回 None（由上层 failover 到备用源）。"""
+    binary: bool = False,
+) -> str | bytes | None:
+    """返回文本（binary=True 时返回原始字节，用于 zip 等二进制文件）；失败返回 None（由上层 failover 到备用源）。"""
     if settings.offline:
         return None
     if host_blocked(url):
@@ -146,6 +147,10 @@ async def fetch(
                 await asyncio.sleep(0.25 * (attempt + 1) + random.random() * 0.15)
                 continue
             raw = resp.content
+            if binary:
+                record(source, True, ms)
+                note_host(url, True)
+                return raw
             text = raw.decode(encoding) if encoding else decode_bytes(raw)
             record(source, True, ms)
             note_host(url, True)

@@ -11,7 +11,9 @@
 - 红利股息率差 = 中证红利股息率 − 10 年期国债收益率
 - 成交额 20 日均值分位、两融余额分位（近约 2 年）
 - 宽基 ETF 份额变化（上交所口径）
-- 股指期货（IF/IH/IC/IM）前 20 会员多空持仓及其变化（中金所口径，不计入温度分）
+- 股指期货（IF/IH/IC/IM）前 20 会员多空持仓及其变化、主力合约基差与年化贴水率（不计入温度分）
+- 国债期限利差（10 年 − 2 年）、融资买入额占成交额比（计入资金分）
+- 风格比值：小盘/大盘（国证2000/沪深300）、红利/成长（中证红利/创业板指）
 - 宏观温度分：拆成"估值分"和"资金分"两个子分数，总分是两者的平均
 
 为什么拆开：估值分位一年以上才走完一个来回，成交额、两融几周就能变一大截。
@@ -52,7 +54,17 @@ MACRO_PARAMS: dict[str, Any] = {
     "etf_lookback": 4,         # 某日 ETF 份额未公布时最多往前回退几个交易日
     "futures_days": 20,        # 股指期货会员持仓取最近多少个交易日画趋势
     "futures_top_members": 12, # 每个品种列出净持仓绝对值最大的前几名会员
+    "basis_min_days": 7,       # 距到期不足几天的合约不算年化基差（分母太小会放大成离谱的数）
+    "style_days": 500,         # 风格比值的 K 线窗口（交易日）
 }
+
+# 风格比值：分子 / 分母都是腾讯/新浪格式的指数代码
+STYLE_PAIRS: tuple[dict[str, Any], ...] = (
+    {"key": "small_large", "name": "小盘/大盘", "num": ("sz399303", "国证2000"), "den": ("sh000300", "沪深300"),
+     "how": "比值上行 = 资金在追小盘题材，下行 = 抱团大盘权重；处在历史极端时常出现风格切换"},
+    {"key": "div_growth", "name": "红利/成长", "num": ("sh000922", "中证红利"), "den": ("sz399006", "创业板指"),
+     "how": "比值上行 = 资金偏防守（高股息），下行 = 偏进攻（成长）；与利率方向高度相关"},
+)
 
 # 温度分档位：(上限, 名称, 解读)
 TEMP_BANDS: tuple[tuple[float, str, str], ...] = (
@@ -220,6 +232,46 @@ def split_temperature(components: list[dict]) -> dict[str, Any]:
             "missing": val["missing"] + flow["missing"]}
 
 
+def ratio_series(num_rows: list[list], den_rows: list[list]) -> list[list]:
+    """两条 K 线按日期对齐后求收盘价比值 → [[date, ratio], ...]。K 线收盘价在第 3 列（下标 2）。"""
+    den = {r[0]: r[2] for r in den_rows if len(r) > 2 and r[2]}
+    out = []
+    for r in num_rows:
+        if len(r) > 2 and r[2] and den.get(r[0]):
+            out.append([r[0], round(r[2] / den[r[0]], 6)])
+    return out
+
+
+def basis_item(fut_close: float | None, spot_close: float | None, expiry: dt.date | None,
+               on: dt.date | None) -> dict[str, Any]:
+    """基差 = 期货 − 现货；年化贴水率 = 基差/现货 × 365/剩余天数。
+
+    负数 = 贴水（期货比现货便宜），对冲盘和中性策略越多贴水越深。
+    剩余天数少于 basis_min_days 时不给年化值：两天到期的合约基差 0.1% 年化后是 18%，毫无意义。
+    """
+    if not fut_close or not spot_close:
+        return {"basis": None, "basis_pct": None, "annual_pct": None, "days": None}
+    basis = fut_close - spot_close
+    pct = basis / spot_close * 100
+    days = (expiry - on).days if expiry and on else None
+    annual = pct * 365 / days if days and days >= MACRO_PARAMS["basis_min_days"] else None
+    return {"basis": round(basis, 2), "basis_pct": round(pct, 3),
+            "annual_pct": round(annual, 2) if annual is not None else None, "days": days}
+
+
+def margin_buy_ratio(margin_rows: list[list], turnover_items: list[dict]) -> list[list]:
+    """融资买入额 / 两市成交额（%）按日期对齐 → [[date, ratio], ...]。
+
+    两融统计含北交所，成交额只含沪深两市，比值会略微偏高（约 1% 以内），趋势判断不受影响。
+    """
+    amt = {r["date"]: r["amount"] for r in turnover_items if r.get("amount")}
+    out = []
+    for r in margin_rows:
+        if len(r) > 2 and r[2] and amt.get(r[0]):
+            out.append([r[0], round(r[2] / amt[r[0]] * 100, 3)])
+    return out
+
+
 def etf_changes(latest: dict[str, dict], lagged: dict[int, dict[str, dict]]) -> dict[str, Any]:
     """计算每只宽基 ETF 及每个跟踪指数合计的份额变化（单位：亿份）。
 
@@ -350,7 +402,24 @@ def _mock_cffex(variety: str, date: str, lag: int) -> list[dict]:
 
 
 def _mock_margin() -> list[list]:
-    return [[d, round(1.6e12 + 2.5e11 * math.sin(i / 90), 0)] for i, d in enumerate(_mock_days(2))]
+    """样例两融：[date, 两融余额, 融资买入额]。"""
+    return [[d, round(1.6e12 + 2.5e11 * math.sin(i / 90), 0), round(7.5e10 + 1.5e10 * math.sin(i / 40), 0)]
+            for i, d in enumerate(_mock_days(2))]
+
+
+def _mock_cffex_daily(date: str, lag: int) -> list[dict]:
+    """样例期指日行情：主力合约贴水约 0.5%~1.5%。"""
+    d0 = to_date(date) or now_cn().date()
+    # 合约代码按样例日期取"下月、下下月"，保证剩余天数为正
+    months = [((d0.month + k - 1) % 12 + 1, d0.year + (d0.month + k - 1) // 12) for k in (1, 2)]
+    codes = [f"{y % 100:02d}{m:02d}" for m, y in months]
+    out = []
+    for v in cffex.VARIETIES:
+        disc = {"IF": 0.004, "IH": 0.002, "IC": 0.010, "IM": 0.013}[v] * (1 + 0.02 * lag)
+        for ci, c in enumerate((f"{v}{codes[0]}", f"{v}{codes[1]}")):
+            out.append({"contract": c, "variety": v, "open_interest": 90000 if ci else 40000,
+                        "close": None, "settle": None, "_disc": disc})
+    return out
 
 
 # =====================================================================
@@ -422,7 +491,8 @@ async def margin_series(force: bool = False) -> cache.Sourced:
     """两融余额历史 [[date, 两融余额(元)], ...]，约 2 年。"""
     async def _em() -> list[list]:
         rows = await em.margin_history(MACRO_PARAMS["flow_days"])
-        out = [[str(r.get("DIM_DATE", ""))[:10], fnum(r.get("RZRQYE"))] for r in rows]
+        # 第 3 列融资买入额用于"融资买入占成交额比"
+        out = [[str(r.get("DIM_DATE", ""))[:10], fnum(r.get("RZRQYE")), fnum(r.get("RZMRE"))] for r in rows]
         return sorted([r for r in out if r[0] and r[1]], key=lambda x: x[0])
 
     registry = {"eastmoney": _em, "mock": _mock_margin}
@@ -535,6 +605,111 @@ async def futures_positions(force: bool = False) -> dict[str, Any]:
     return out
 
 
+async def futures_basis(force: bool = False) -> dict[str, Any]:
+    """四个品种主力合约（持仓量最大）的基差与年化贴水率：最新一日 + 最近 N 个交易日。"""
+    from . import market
+
+    key = "macro:basis"
+    if not force:
+        hit = cache.cache_get(key)
+        if hit is not None:
+            return hit
+
+    async def day_rows(d: dt.date, lag: int) -> list[dict]:
+        if settings.offline:
+            return _mock_cffex_daily(d.strftime("%Y-%m-%d"), lag)
+        return await cffex.daily(d.strftime("%Y-%m-%d"))
+
+    # 1) 定位最新一个有日行情的交易日
+    d, latest = last_trade_day(), None
+    for _ in range(5):
+        if await day_rows(d, 0):
+            latest = d
+            break
+        d = prev_trade_day(d)
+    if latest is None:
+        return {"items": [], "date": None, "source": "none", "error": "中金所日行情接口无数据或不可达"}
+    days = [latest]
+    while len(days) < MACRO_PARAMS["futures_days"]:
+        days.append(prev_trade_day(days[-1]))
+    days.reverse()
+    # 2) 期指日行情（各日）与现货指数 K 线（四个指数）并发拉取
+    fut_res = asyncio.gather(*[day_rows(x, len(days) - 1 - i) for i, x in enumerate(days)], return_exceptions=True)
+    spot_res = asyncio.gather(*[market.kline(sym, 60, force=force) for sym in cffex.SPOT_SYMBOL.values()],
+                              return_exceptions=True)
+    fut_days, spots = await asyncio.gather(fut_res, spot_res)
+    spot_close: dict[str, dict[str, float]] = {}
+    for v, res in zip(cffex.SPOT_SYMBOL, spots):
+        rows = res.data if isinstance(res, cache.Sourced) and res.data else []
+        spot_close[v] = {r[0]: r[2] for r in rows if len(r) > 2}
+    items, history = [], {v: [] for v in cffex.VARIETIES}
+    for day, rows in zip(days, fut_days):
+        if not isinstance(rows, list) or not rows:
+            continue
+        ds = day.strftime("%Y-%m-%d")
+        for v in cffex.VARIETIES:
+            cands = [r for r in rows if r["variety"] == v and r.get("open_interest")]
+            if not cands:
+                continue
+            main = max(cands, key=lambda r: r["open_interest"])     # 主力合约 = 持仓量最大
+            spot = spot_close[v].get(ds)
+            close = main.get("close") or main.get("settle")
+            if settings.offline:
+                # 样例 K 线的日期与这里的交易日对不上，直接用固定点位，再按设定贴水生成期货价
+                spot = {"IF": 3900.0, "IH": 2700.0, "IC": 5800.0, "IM": 6200.0}[v]
+                close = round(spot * (1 - main["_disc"]), 2)
+            expiry = cffex.contract_expiry(main["contract"])
+            b = basis_item(close, spot, expiry, day)
+            history[v].append([ds, b["annual_pct"], b["basis_pct"]])
+            if day == latest:
+                items.append({"code": v, "index": cffex.VARIETIES[v], "contract": main["contract"],
+                              "expiry": expiry.strftime("%Y-%m-%d") if expiry else None,
+                              "close": close, "spot": spot, **b})
+    out = {"items": items, "history": history, "date": latest.strftime("%Y-%m-%d"),
+           "source": "mock" if settings.offline else "cffex",
+           "how": ("负数 = 贴水（期货比现货便宜）。贴水加深 + 会员净空增加 = 对冲盘在涌入；"
+                   "贴水收敛甚至转升水 = 对冲撤离、多头情绪回暖。IC/IM 常年贴水更深，主要来自量化中性策略的空单"),
+           "caliber": "主力合约 = 当日持仓量最大的合约；期货用收盘价，现货用指数收盘价；剩余不足 7 天不算年化"}
+    if items:
+        cache.cache_set(key, out, settings.ttl_macro)
+    return out
+
+
+async def style_ratios(force: bool = False) -> dict[str, Any]:
+    """风格比值：当前值、近约 2 年分位、20 日变化，以及归一化后的走势（窗口起点 = 100）。"""
+    from . import market
+
+    syms = sorted({p[k][0] for p in STYLE_PAIRS for k in ("num", "den")})
+    if settings.offline:
+        # 样例 K 线对所有代码都一样，比值会是一条直线；离线时直接造两条正弦比值
+        days = _mock_days(2)
+        series = {p["key"]: [[d, round(1 + 0.15 * math.sin(i / (60 + 30 * j)), 6)] for i, d in enumerate(days)]
+                  for j, p in enumerate(STYLE_PAIRS)}
+        source = "mock"
+    else:
+        res = await asyncio.gather(*[market.kline(s, MACRO_PARAMS["style_days"], force=force) for s in syms],
+                                   return_exceptions=True)
+        kl = {s: (r.data if isinstance(r, cache.Sourced) and r.data else []) for s, r in zip(syms, res)}
+        series = {p["key"]: ratio_series(kl[p["num"][0]], kl[p["den"][0]]) for p in STYLE_PAIRS}
+        source = "+".join(sorted({r.source for r in res if isinstance(r, cache.Sourced) and r.data})) or "none"
+    items = []
+    for p in STYLE_PAIRS:
+        rows = series[p["key"]]
+        item: dict[str, Any] = {"key": p["key"], "name": p["name"], "num": p["num"][1], "den": p["den"][1],
+                                "how": p["how"], "value": None, "pct": None, "chg20_pct": None, "series": []}
+        if rows:
+            vals = [r[1] for r in rows]
+            base = vals[0]
+            item.update({
+                "date": rows[-1][0], "value": vals[-1], "from": rows[0][0], "n": len(vals),
+                "pct": percentile_rank(vals, vals[-1], MACRO_PARAMS["min_flow_history"]),
+                "chg20_pct": round((vals[-1] / vals[-21] - 1) * 100, 2) if len(vals) > 20 else None,
+                "series": downsample([[d, round(v / base * 100, 2)] for d, v in rows], 300),
+            })
+        items.append(item)
+    return {"items": items, "source": source}
+
+
 # =====================================================================
 # 组装：各分项的"当前值 + 分位 + 解读"
 # =====================================================================
@@ -597,12 +772,23 @@ def _rates_block(bonds: list[dict], gaps: list[str]) -> dict[str, Any]:
         gaps.append("美国 10 年期国债：数据缺失，中美利差无法计算")
     three_years = tail_years([[r["date"], r] for r in bonds], 3)
     series = [[d, r.get("cn10y"), r.get("us10y"),
-               round(r["cn10y"] - r["us10y"], 4) if r.get("cn10y") is not None and r.get("us10y") is not None else None]
+               round(r["cn10y"] - r["us10y"], 4) if r.get("cn10y") is not None and r.get("us10y") is not None else None,
+               round(r["cn10y"] - r["cn2y"], 4) if r.get("cn10y") is not None and r.get("cn2y") is not None else None]
               for d, r in three_years]
+    # 期限利差 10Y − 2Y：只用两项都有值的日子，近 10 年分位
+    term = tail_years([[r["date"], round(r["cn10y"] - r["cn2y"], 4)] for r in bonds
+                       if r.get("cn10y") is not None and r.get("cn2y") is not None], MACRO_PARAMS["valuation_years"])
+    term_vals = [v for _, v in term]
+    if not term:
+        gaps.append("期限利差：缺少 2 年期国债数据")
     return {
         "date": last["date"], "cn10y": last["cn10y"], "cn2y": last.get("cn2y"), "cn30y": last.get("cn30y"),
         "cn10y_chg20_bp": round((last["cn10y"] - prev20["cn10y"]) * 100, 1) if prev20 else None,
         "us10y": us_last, "spread": spread,
+        "term_spread": term_vals[-1] if term_vals else None,
+        "term_pct": percentile_rank(term_vals, term_vals[-1]) if term_vals else None,
+        "term_chg20_bp": round((term_vals[-1] - term_vals[-21]) * 100, 1) if len(term_vals) > 20 else None,
+        "term_how": "10 年减 2 年。利差走阔 = 市场预期增长修复，收窄或倒挂 = 预期走弱；央行降短端利率时也会走阔",
         "series": downsample(series, 400),
         "how": "国债收益率下行利好股票估值（分母变小）；中美利差倒挂越深，人民币与外资流入压力越大",
     }
@@ -638,12 +824,30 @@ def _margin_block(res: Any, gaps: list[str]) -> dict[str, Any]:
         "chg20_yi": yi(vals[-1] - prev20) if prev20 else None,
         "pct": percentile_rank(vals, vals[-1], MACRO_PARAMS["min_flow_history"]),
         "n": len(vals), "from": rows[0][0], "source": res.source,
-        "series": downsample([[d, yi(v)] for d, v in rows], 300),
+        "series": downsample([[r[0], yi(r[1])] for r in rows], 300),
         "note": "占流通市值比需全A流通市值序列，暂未接入",
     }
 
 
-def _components(val: list[dict], erp: dict, turnover: dict, margin: dict) -> list[dict]:
+def _margin_buy_block(margin_res: Any, th: dict, gaps: list[str]) -> dict[str, Any]:
+    """融资买入额占成交额比：比两融余额更敏感，杠杆资金"交易"热度的过热信号。"""
+    rows = margin_res.data if isinstance(margin_res, cache.Sourced) and margin_res.data else []
+    ratios = margin_buy_ratio(rows, th.get("items") or [])
+    if not ratios:
+        gaps.append("融资买入占比：缺少融资买入额或成交额")
+        return {"ratio": None, "pct": None}
+    vals = [v for _, v in ratios]
+    return {
+        "date": ratios[-1][0], "ratio": vals[-1],
+        "ma5": round(sum(vals[-5:]) / min(5, len(vals)), 3),
+        "pct": percentile_rank(vals, vals[-1], MACRO_PARAMS["min_flow_history"]),
+        "n": len(vals), "estimated": bool(th.get("estimated")),
+        "series": downsample(ratios, 300),
+        "how": "融资买入额 / 两市成交额。两融余额是存量反应慢，这个比例对杠杆过热更敏感，2015 年顶部它先见顶",
+    }
+
+
+def _components(val: list[dict], erp: dict, turnover: dict, margin: dict, mbuy: dict) -> list[dict]:
     """温度分的组成：每项给出当前值、分位和 heat（0~100，越高越热）。"""
     v300, vall = val[0], val[1]
     erp_pct = erp.get("erp_pct")
@@ -659,6 +863,9 @@ def _components(val: list[dict], erp: dict, turnover: dict, margin: dict) -> lis
         {"key": "turnover", "group": "flow", "name": "成交额 20 日均值分位", "value": turnover.get("ma20_yi"), "unit": "亿",
          "pct": turnover.get("pct"), "heat": turnover.get("pct"), "window": "近约2年", "source": turnover.get("source"),
          "estimated": bool(turnover.get("estimated"))},
+        {"key": "margin_buy", "group": "flow", "name": "融资买入占成交额比分位", "value": mbuy.get("ratio"), "unit": "%",
+         "pct": mbuy.get("pct"), "heat": mbuy.get("pct"), "window": "近约2年", "source": "两融 ÷ 成交额",
+         "estimated": bool(mbuy.get("estimated"))},
         {"key": "margin", "group": "flow", "name": "两融余额分位", "value": margin.get("balance_yi"), "unit": "亿",
          "pct": margin.get("pct"), "heat": margin.get("pct"), "window": "近约2年", "source": margin.get("source")},
     ]
@@ -691,11 +898,12 @@ async def overview(force: bool = False) -> dict[str, Any]:
     gaps: list[str] = []
     v300, vall = VALUATION_INDEXES
     # 所有原始数据互不依赖，并发拉取；单项失败以异常对象返回，不拖垮整页
-    (pe300, peall, pb300, pball, eva_res, bond_res, th, margin_res, etf, fut) = await asyncio.gather(
+    (pe300, peall, pb300, pball, eva_res, bond_res, th, margin_res, etf, fut, basis, style) = await asyncio.gather(
         pe_series(v300, force), pe_series(vall, force), pb_series(v300, force), pb_series(vall, force),
         eva_snapshot(force), bond_series(force),
         market.turnover_history(days=MACRO_PARAMS["flow_days"], force=force),
         margin_series(force), etf_flows(force), futures_positions(force),
+        futures_basis(force), style_ratios(force),
         return_exceptions=True,
     )
     eva = eva_res.data if isinstance(eva_res, cache.Sourced) and eva_res.data else {}
@@ -708,6 +916,16 @@ async def overview(force: bool = False) -> dict[str, Any]:
     rates = _rates_block(bonds, gaps)
     turnover = _turnover_block(th if isinstance(th, dict) else {}, gaps)
     margin = _margin_block(margin_res, gaps)
+    mbuy = _margin_buy_block(margin_res, th if isinstance(th, dict) else {}, gaps)
+    if isinstance(basis, Exception):
+        basis = {"items": [], "error": f"{type(basis).__name__}: {basis}"}
+    if not basis.get("items"):
+        gaps.append("股指期货基差：" + (basis.get("error") or "无数据"))
+    if isinstance(style, Exception):
+        style = {"items": [], "source": "none", "error": f"{type(style).__name__}: {style}"}
+    for it in style.get("items") or []:
+        if it.get("value") is None:
+            gaps.append(f"风格比值 {it['name']}：{it['num']} 或 {it['den']} 的 K 线不可用")
     if isinstance(etf, Exception):
         etf = {"items": [], "groups": [], "error": f"{type(etf).__name__}: {etf}", "coverage": ETF_COVERAGE_NOTE}
     if not etf.get("items") or all(r.get("shares_yi") is None for r in etf.get("items") or []):
@@ -727,7 +945,7 @@ async def overview(force: bool = False) -> dict[str, Any]:
     if div_yield is None:
         gaps.append("中证红利股息率：蛋卷不可用，红利股息率差无法计算")
 
-    components = _components(valuation, erp, turnover, margin)
+    components = _components(valuation, erp, turnover, margin, mbuy)
     payload: dict[str, Any] = {
         "as_of": str(last_trade_day()),
         "temperature": split_temperature(components),
@@ -736,7 +954,9 @@ async def overview(force: bool = False) -> dict[str, Any]:
         "erp": erp,
         "rates": rates,
         "dividend": dividend,
-        "flows": {"turnover": turnover, "margin": margin},
+        "flows": {"turnover": turnover, "margin": margin, "margin_buy": mbuy},
+        "basis": basis,
+        "style": style,
         "etf": etf,
         "futures": fut,
         "gaps": gaps,
@@ -748,6 +968,7 @@ async def overview(force: bool = False) -> dict[str, Any]:
                 "pb": getattr(pb300, "source", "none"), "eva": getattr(eva_res, "source", "none"),
                 "bond": getattr(bond_res, "source", "none"), "margin": getattr(margin_res, "source", "none"),
                 "turnover": turnover.get("source"), "etf": etf.get("source"), "futures": fut.get("source"),
+                "basis": basis.get("source"), "style": style.get("source"),
             },
             "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
             "cached": False, "offline": settings.offline,
@@ -842,6 +1063,16 @@ async def probe() -> dict[str, Any]:
             d = prev_trade_day(d)
         return {"rows": 0, "error": "最近 5 个交易日都没取到 IF 持仓排名"}
 
+    async def p_cffex_daily() -> dict:
+        d = last_trade_day()
+        for _ in range(5):
+            rows = await cffex.daily(d.strftime("%Y-%m-%d"))
+            if rows:
+                main = max((r for r in rows if r["variety"] == "IF"), key=lambda r: r["open_interest"] or 0, default=None)
+                return {"rows": len(rows), "date": d.strftime("%Y-%m-%d"), "sample": main}
+            d = prev_trade_day(d)
+        return {"rows": 0, "error": "最近 5 个交易日都没取到股指期货日行情（每日 CSV 与月度 zip 均失败）"}
+
     items = await asyncio.gather(
         _probe("中证指数 index-perf（PE 主源）", p_csindex()),
         _probe("蛋卷 估值列表（股息率）", p_danjuan_list()),
@@ -851,6 +1082,7 @@ async def probe() -> dict[str, Any]:
         _probe("上交所 ETF 份额", p_sse()),
         _probe("东财 两融余额", p_margin()),
         _probe("中金所 股指期货持仓排名", p_cffex()),
+        _probe("中金所 股指期货日行情（基差）", p_cffex_daily()),
     )
     return {"offline": False, "items": list(items),
             "source_stats": {k: http.SOURCE_STATS.get(k) for k in ("csindex", "danjuan", "eastmoney", "sse", "cffex")}}

@@ -94,6 +94,10 @@
         <div class="row-wrap small" style="gap:6px;margin-top:6px">
           <span class="chip">中国2年 {{ pv(rates.cn2y, 3) }}</span>
           <span class="chip">中国30年 {{ pv(rates.cn30y, 3) }}</span>
+          <span class="chip" :title="rates.term_how">
+            期限利差 10Y−2Y <b>{{ pv(rates.term_spread, 3) }}</b>（近10年分位 {{ rates.term_pct ?? '—' }}%，20日
+            {{ rates.term_chg20_bp == null ? '—' : signed(rates.term_chg20_bp, 1) + 'bp' }}）
+          </span>
           <span class="chip" :title="div.how">
             红利股息率差：{{ div.name }} {{ pv(div.dividend_yield) }} − 10年国债 = <b>{{ pv(div.spread) }}</b>
           </span>
@@ -105,7 +109,8 @@
         <div class="small muted" style="margin-top:6px">
           最新成交额 {{ turnover.latest_yi == null ? '—' : num(turnover.latest_yi, 0) + ' 亿' }}，
           20日均值 {{ turnover.ma20_yi == null ? '—' : num(turnover.ma20_yi, 0) + ' 亿' }}（分位 {{ turnover.pct ?? '—' }}%）；
-          两融20日变化 <span :class="cls(margin.chg20_yi)">{{ signed(margin.chg20_yi, 0) }} 亿</span>
+          两融20日变化 <span :class="cls(margin.chg20_yi)">{{ signed(margin.chg20_yi, 0) }} 亿</span>；
+          <span :title="mbuy.how">融资买入占成交额 <b>{{ pv(mbuy.ratio) }}</b>（5日均 {{ pv(mbuy.ma5) }}，分位 {{ mbuy.pct ?? '—' }}%）</span>
           <span v-if="turnover.estimated" class="tag gold tiny">成交额为按量推算</span>
         </div>
       </Panel>
@@ -156,6 +161,11 @@
           <div class="v mono" :class="cls(v.net)" style="font-size:18px">{{ signed(v.net, 0) }}</div>
           <div class="d tiny">净持仓（手），较前日 <span :class="cls(v.net_chg)">{{ signed(v.net_chg, 0) }}</span></div>
           <div class="d tiny dim">多 {{ num(v.long, 0) }}（{{ signed(v.long_chg, 0) }}） / 空 {{ num(v.short, 0) }}（{{ signed(v.short_chg, 0) }}）</div>
+          <div class="d tiny" v-if="basisOf(v.code).contract">
+            主力 {{ basisOf(v.code).contract }} 基差 <span :class="cls(basisOf(v.code).basis_pct)">{{ pctf(basisOf(v.code).basis_pct) }}</span>
+            · 年化 <span :class="cls(basisOf(v.code).annual_pct)">{{ pctf(basisOf(v.code).annual_pct) }}</span>
+            <span class="dim">（剩 {{ basisOf(v.code).days }} 天）</span>
+          </div>
         </div>
       </div>
       <!-- 品种对照：代码 → 现货指数 → 每点价值，换算一手合约金额用 -->
@@ -189,8 +199,33 @@
           </div>
         </div>
       </div>
-      <div class="small muted" style="line-height:1.7;margin-top:8px">{{ fut.how }}<div class="dim">口径：{{ fut.caliber }}</div></div>
+      <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:10px">
+        <div>
+          <div class="small muted" style="margin-bottom:4px">主力合约年化基差（负数 = 贴水）</div>
+          <EChart :option="basisOpt" :height="200" />
+        </div>
+        <div class="small muted" style="line-height:1.8">
+          <div>{{ basis.how }}</div>
+          <div class="dim">基差口径：{{ basis.caliber || '—' }}</div>
+          <div style="margin-top:6px">{{ fut.how }}</div>
+          <div class="dim">持仓口径：{{ fut.caliber }}</div>
+        </div>
+      </div>
     </Panel>
+
+    <!-- 风格比值：资金在追小盘还是抱大盘、偏防守还是偏进攻 -->
+    <div class="grid" style="grid-template-columns:1fr 1fr">
+      <Panel title="风格比值" sub="窗口起点 = 100，近约2年" :loading="loading" :empty="!styles.some(x => x.value != null)">
+        <EChart :option="styleOpt" :height="230" />
+        <div class="stack" style="gap:4px;margin-top:6px">
+          <div class="small" v-for="x in styles" :key="x.key">
+            <b>{{ x.name }}</b>（{{ x.num }} / {{ x.den }}）：分位 {{ x.pct ?? '—' }}%，20日
+            <span :class="cls(x.chg20_pct)">{{ pctf(x.chg20_pct) }}</span>
+            <div class="dim">{{ x.how }}</div>
+          </div>
+        </div>
+      </Panel>
+    </div>
 
     <!-- 缺口与探针：缺什么、为什么缺，一键核对每个源 -->
     <Panel title="数据缺口与接口核对" sub="缺失项不计入温度分，也不会用 0 或样例值代替">
@@ -266,6 +301,10 @@ const fut = computed(() => d.value.futures || {})
 const futVars = computed(() => fut.value.varieties || [])
 const futSel = ref('IF')                       // 当前查看会员明细的品种
 const futCur = computed(() => futVars.value.find(v => v.code === futSel.value) || {})
+const mbuy = computed(() => (d.value.flows || {}).margin_buy || {})
+const basis = computed(() => d.value.basis || {})
+const basisOf = code => (basis.value.items || []).find(x => x.code === code) || {}
+const styles = computed(() => (d.value.style || {}).items || [])
 
 // ---------- 文案格式化 ----------
 /** 百分数（不带正负号），缺失显示 — */
@@ -346,6 +385,7 @@ const rateOpt = computed(() => {
     ln('中国10Y', rs.map(r => [r[0], r[1]]), '#ffb020'),
     ln('美国10Y', rs.map(r => [r[0], r[2]]), '#4c9aff'),
     ln('中美利差', rs.map(r => [r[0], r[3]]), '#a97bff', { lineStyle: { width: 1, type: 'dashed', color: '#a97bff' } }),
+    ln('期限利差10Y-2Y', rs.map(r => [r[0], r[4]]), '#36cfc9', { lineStyle: { width: 1, type: 'dashed', color: '#36cfc9' } }),
   ], yVal('%'))
 })
 // 资金：成交额20日均值（左轴）与两融余额（右轴）
@@ -361,6 +401,15 @@ const FUT_INFO = [
 const FUT_COLORS = ['#ff7a45', '#ffb020', '#4c9aff', '#a97bff']
 const futOpt = computed(() => timeOpt(futVars.value.map((v, i) =>
   ln(`${v.code} ${v.index}`, (v.history || []).map(r => [r[0], r[3]]), FUT_COLORS[i % 4], { showSymbol: true, symbolSize: 3 })), yVal('手')))
+// 期指主力合约年化基差
+const basisOpt = computed(() => {
+  const h = basis.value.history || {}
+  return timeOpt(FUT_INFO.map((f, i) => ln(`${f.code} ${f.index}`, (h[f.code] || []).map(r => [r[0], r[1]]),
+    FUT_COLORS[i], { showSymbol: true, symbolSize: 3 })), yVal('%'))
+})
+// 风格比值：归一化后同图比较
+const styleOpt = computed(() => timeOpt(styles.value.map((x, i) =>
+  ln(x.name, x.series || [], ['#ff7a45', '#4c9aff'][i % 2])), yVal('起点=100')))
 // 温度历史：0~100，20/80 两条档位线
 const histOpt = computed(() => timeOpt([ln('温度分', hist.value.map(r => [r.trade_date, r.score]), '#ff7a45', {
   showSymbol: true, symbolSize: 4,

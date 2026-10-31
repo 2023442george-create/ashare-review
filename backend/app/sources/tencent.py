@@ -70,8 +70,8 @@ async def quote(codes: list[str]) -> list[dict]:
 
 
 async def kline(symbol: str, period: str = "day", count: int = 120, fq: str = "qfq") -> list[list]:
-    """返回 [[date, open, close, high, low, volume], ...]"""
-    sym = symbol if re.match(r"^(sh|sz|bj)", str(symbol)) else code_to_symbol(symbol)
+    """返回 [[date, open, close, high, low, volume], ...]；symbol 支持 sh/sz/bj/hk 前缀。"""
+    sym = symbol if re.match(r"^(sh|sz|bj|hk)", str(symbol)) else code_to_symbol(symbol)
     url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={sym},{period},,,{count},{fq}"
     data = await http.fetch_json(url, source="tencent")
     if not data:

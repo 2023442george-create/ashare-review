@@ -3,7 +3,9 @@
 为什么接它：股指期货（IF/IH/IC/IM）前 20 名会员的多单、空单持仓，是公开数据里
 唯一能看到"大机构在期货端怎么站队"的窗口。市场常盯的"中信期货空单"就出自这里。
 
-接口：http://www.cffex.com.cn/sj/ccpm/{YYYYMM}/{DD}/{品种}_1.csv
+接口：
+- 持仓排名 http://www.cffex.com.cn/sj/ccpm/{YYYYMM}/{DD}/{品种}_1.csv
+- 日行情   http://www.cffex.com.cn/fzjy/mrhq/{YYYYMM}/{DD}/{YYYYMMDD}_1.csv（备用：sj/historysj/{YYYYMM}/zip/{YYYYMM}.zip）
 - GBK 编码；每个交易日 16:30 左右更新，当天未公布时返回 404
 - 每行：交易日,合约,排名,成交量会员,成交量,增减,持买会员,持买单量,增减,持卖会员,持卖单量,增减
 - 按合约分别排名（IF2511、IF2512…），同一会员会出现在多个合约里，需要按会员汇总
@@ -11,6 +13,11 @@
 注意：本仓库所在环境无法直连该站，格式依据公开资料编写，首次运行请用 /api/macro/probe 核对。
 """
 from __future__ import annotations
+
+import datetime as dt
+import io
+import re
+import zipfile
 
 from ..core import http
 from ..core.utils import fnum
@@ -55,3 +62,59 @@ async def rank(date: str, variety: str) -> list[dict]:
     text = await http.fetch(f"{HOST}/sj/ccpm/{ym}/{dd}/{variety}_1.csv", source="cffex",
                             encoding="gbk", headers={"Referer": f"{HOST}/ccpm/"})
     return parse_rank_csv(text or "")
+
+
+# ---------------- 日行情（算基差用） ----------------
+# 每日行情 CSV：合约代码,今开盘,最高价,最低价,成交量,成交金额,持仓量,持仓变化,今收盘,今结算,前结算,...
+_STOCK_INDEX = re.compile(r"^(IF|IH|IC|IM)\d{4}$")
+
+
+def parse_daily_csv(text: str) -> list[dict]:
+    """解析日行情 → 股指期货各合约的持仓量、收盘价、结算价（期权、国债期货、小计行都跳过）。"""
+    out: list[dict] = []
+    for line in (text or "").splitlines():
+        cells = [c.strip() for c in line.split(",")]
+        if len(cells) < 10 or not _STOCK_INDEX.match(cells[0]):
+            continue
+        out.append({"contract": cells[0], "variety": cells[0][:2], "open_interest": _int(cells[6]),
+                    "close": fnum(cells[8]), "settle": fnum(cells[9])})
+    return out
+
+
+async def daily(date: str) -> list[dict]:
+    """某交易日（YYYY-MM-DD）股指期货各合约日行情。
+
+    主源是每日 CSV；取不到时退到当月历史 zip（同一份数据按月打包），两者都没有返回空列表。
+    """
+    ym, dd, ymd = date[:4] + date[5:7], date[8:10], date.replace("-", "")
+    text = await http.fetch(f"{HOST}/fzjy/mrhq/{ym}/{dd}/{ymd}_1.csv", source="cffex", encoding="gbk")
+    rows = parse_daily_csv(text or "")
+    if rows:
+        return rows
+    raw = await http.fetch(f"{HOST}/sj/historysj/{ym}/zip/{ym}.zip", source="cffex", binary=True)
+    if not raw:
+        return []
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            return parse_daily_csv(z.read(f"{ymd}_1.csv").decode("gb18030", errors="ignore"))
+    except (KeyError, zipfile.BadZipFile):
+        return []
+
+
+def third_friday(year: int, month: int) -> dt.date:
+    """股指期货最后交易日：合约月份第三个周五（遇法定假日顺延，这里不处理顺延，只差一两天）。"""
+    first = dt.date(year, month, 1)
+    return first + dt.timedelta(days=(4 - first.weekday()) % 7 + 14)
+
+
+def contract_expiry(contract: str) -> dt.date | None:
+    """IF2511 → 2025-11 第三个周五。"""
+    m = re.match(r"^[A-Z]{2}(\d{2})(\d{2})$", contract or "")
+    if not m:
+        return None
+    return third_friday(2000 + int(m.group(1)), int(m.group(2)))
+
+
+# 期指代码 → 现货指数行情代码（腾讯/新浪格式），算基差用
+SPOT_SYMBOL: dict[str, str] = {"IF": "sh000300", "IH": "sh000016", "IC": "sh000905", "IM": "sh000852"}
+
