@@ -71,6 +71,23 @@ class TemperatureTests(unittest.TestCase):
         self.assertIsNone(t["score"])
         self.assertEqual(t["label"], "数据不足")
 
+    def test_split_needs_both_sides_for_total(self):
+        """只取到估值分时不能合成总分，否则等于把一边冒充成全貌。"""
+        comps = [{"name": "a", "group": "valuation", "heat": 20}, {"name": "b", "group": "valuation", "heat": 40},
+                 {"name": "c", "group": "flow", "heat": 90}, {"name": "d", "group": "flow", "heat": None}]
+        t = macro.split_temperature(comps)
+        self.assertEqual(t["valuation"]["score"], 30.0)
+        self.assertIsNone(t["flow"]["score"])           # 资金分只有 1 项，不足 2 项
+        self.assertIsNone(t["score"])
+        self.assertEqual(t["label"], "数据不足")
+
+    def test_split_flags_estimated_turnover(self):
+        comps = [{"name": "a", "group": "valuation", "heat": 50}, {"name": "b", "group": "valuation", "heat": 50},
+                 {"name": "c", "group": "flow", "heat": 80, "estimated": True}, {"name": "d", "group": "flow", "heat": 60}]
+        t = macro.split_temperature(comps)
+        self.assertEqual(t["score"], 60.0)
+        self.assertTrue(t["flow"]["estimated"])
+
     def test_bands(self):
         self.assertEqual(macro.band_of(10)["label"], "冰点")
         self.assertEqual(macro.band_of(50)["label"], "中性")
@@ -174,8 +191,10 @@ class OverviewTests(unittest.TestCase):
     def test_offline_overview_is_complete(self):
         settings.offline = True
         res = asyncio.run(macro.overview(force=True))
-        self.assertIsNotNone(res["temperature"]["score"])
-        self.assertEqual(res["temperature"]["used"], 5)
+        t = res["temperature"]
+        self.assertIsNotNone(t["score"])
+        self.assertEqual(t["score"], round((t["valuation"]["score"] + t["flow"]["score"]) / 2, 1))
+        self.assertEqual(t["valuation"]["used"], 3)
         self.assertTrue(all(v in ("mock", None) or "mock" in str(v) for v in res["meta"]["sources"].values()))
         self.assertIsNotNone(res["erp"]["erp_pct"])
         self.assertTrue(res["etf"]["items"])

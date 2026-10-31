@@ -10,7 +10,7 @@
     <!-- 第一行：最关键的 6 个数 -->
     <div class="grid" style="grid-template-columns:repeat(6,1fr)">
       <StatCard label="宏观温度" :value="t.score ?? '—'" :color="t.score == null ? '' : scoreColor(t.score)"
-                :bar="t.score ?? null" :desc="`${t.label || '—'} · 可用 ${t.used ?? 0}/${t.total ?? 5} 项`" :help="t.tip" />
+                :bar="t.score ?? null" :desc="tempDesc" :help="t.tip" />
       <StatCard label="沪深300 PE" :value="num(v300.pe, 2)" :desc="pctDesc(v300.pe_pct, '近10年分位')"
                 :help="'中证官方滚动市盈率，来源：' + (v300.pe_source || '—')" />
       <StatCard label="中证全指 PE" :value="num(vall.pe, 2)" :desc="pctDesc(vall.pe_pct, '近10年分位')"
@@ -23,7 +23,7 @@
 
     <div class="grid" style="grid-template-columns:1.3fr 1fr">
       <!-- 温度分由哪几项组成、每项多热 -->
-      <Panel title="温度构成" :sub="`数据日 ${d.as_of || '—'}，各项历史分位等权平均（ERP 反向）`" :loading="loading">
+      <Panel title="温度构成" :sub="`数据日 ${d.as_of || '—'}；总分 = (估值分 + 资金分) / 2，ERP 取反向`" :loading="loading">
         <template #extra>
           <button class="btn" @click="load(true)" :disabled="busy">
             <span v-if="busy" class="spin"></span> {{ busy ? '重新拉取中' : '重新拉取' }}
@@ -32,8 +32,20 @@
         <table class="tbl">
           <thead><tr><th>指标</th><th class="num">当前值</th><th class="num">历史分位</th>
             <th style="width:28%">热度</th><th>窗口</th><th>来源</th></tr></thead>
-          <tbody>
-            <tr v-for="c in comps" :key="c.key">
+          <tbody v-for="g in GROUPS" :key="g.key">
+            <!-- 分组标题行：子分数 + 档位 -->
+            <tr style="background:rgba(255,255,255,.03)">
+              <td colspan="6">
+                <b>{{ g.name }}</b>
+                <span class="mono" style="margin-left:8px;font-size:14px"
+                      :style="{ color: sub(g.key).score == null ? '#8d9bb1' : scoreColor(sub(g.key).score) }">
+                  {{ sub(g.key).score ?? '—' }}</span>
+                <span class="small muted" style="margin-left:6px">{{ sub(g.key).label }} · 可用 {{ sub(g.key).used ?? 0 }}/{{ sub(g.key).total ?? 0 }}</span>
+                <span class="small dim" style="margin-left:8px">{{ g.desc }}</span>
+                <span v-if="g.key === 'flow' && sub('flow').estimated" class="tag gold tiny" style="margin-left:6px">含按量推算的成交额</span>
+              </td>
+            </tr>
+            <tr v-for="c in comps.filter(x => x.group === g.key)" :key="c.key">
               <td>{{ c.name }}</td>
               <td class="num mono">{{ c.value == null ? '—' : num(c.value, c.unit === '亿' ? 0 : 2) + ' ' + c.unit }}</td>
               <td class="num mono">{{ c.pct == null ? '—' : c.pct + '%' }}</td>
@@ -243,6 +255,13 @@ const turnover = computed(() => (d.value.flows || {}).turnover || {})
 const margin = computed(() => (d.value.flows || {}).margin || {})
 const etf = computed(() => d.value.etf || {})
 const gaps = computed(() => d.value.gaps || [])
+// 温度分的两个子分数：估值看大方向（慢），资金看热度（快）
+const GROUPS = [
+  { key: 'valuation', name: '估值分', desc: '慢变量：一年以上的大方向' },
+  { key: 'flow', name: '资金分', desc: '快变量：几周内的冷热' },
+]
+const sub = k => t.value[k] || {}
+const tempDesc = computed(() => `${t.value.label || '—'} · 估值 ${sub('valuation').score ?? '—'} / 资金 ${sub('flow').score ?? '—'}`)
 const fut = computed(() => d.value.futures || {})
 const futVars = computed(() => fut.value.varieties || [])
 const futSel = ref('IF')                       // 当前查看会员明细的品种

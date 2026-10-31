@@ -12,7 +12,11 @@
 - 成交额 20 日均值分位、两融余额分位（近约 2 年）
 - 宽基 ETF 份额变化（上交所口径）
 - 股指期货（IF/IH/IC/IM）前 20 会员多空持仓及其变化（中金所口径，不计入温度分）
-- 宏观温度分：上述分位等权平均（ERP 取反向）
+- 宏观温度分：拆成"估值分"和"资金分"两个子分数，总分是两者的平均
+
+为什么拆开：估值分位一年以上才走完一个来回，成交额、两融几周就能变一大截。
+两类变量直接等权平均，资金一放量总分就跳，估值信号被淹没。分开展示后，
+"便宜但冷清"（估值低、资金冷）和"贵且火热"（估值高、资金热）一眼可分。
 
 与项目其它部分一致的三条约束：
 1. 缺数据记 None 并写进 gaps，绝不按 0 计——0 分位会被读成"极度低估"
@@ -42,7 +46,8 @@ MACRO_PARAMS: dict[str, Any] = {
     "min_history": 250,        # 估值类少于这么多样本不给分位
     "min_flow_history": 120,   # 资金类少于这么多样本不给分位
     "yield_match_days": 7,     # ERP 对齐：PE 当天无国债数据时最多向前找几天
-    "min_components": 3,       # 温度分至少需要几个组件才输出
+    "min_components": 3,       # 温度分至少需要几个组件才输出（通用函数的默认值）
+    "min_sub_components": 2,   # 估值分 / 资金分各自至少需要几个组件
     "etf_lags": (1, 5, 20),    # ETF 份额对比的交易日间隔
     "etf_lookback": 4,         # 某日 ETF 份额未公布时最多往前回退几个交易日
     "futures_days": 20,        # 股指期货会员持仓取最近多少个交易日画趋势
@@ -177,19 +182,42 @@ def band_of(score: float | None) -> dict[str, str]:
     return {"label": TEMP_BANDS[-1][1], "tip": TEMP_BANDS[-1][2]}
 
 
-def temperature(components: list[dict]) -> dict[str, Any]:
+def temperature(components: list[dict], min_n: int | None = None) -> dict[str, Any]:
     """等权平均各组件的 heat（0~100，越高越热），缺失组件不参与平均。
 
     缺失组件被排除而不是按 0 或 50 计：按 0 会把温度拉成"冰点"，按 50 会制造
-    虚假的"中性"。可用组件少于 min_components 时整体不出分。
+    虚假的"中性"。可用组件少于 min_n（默认 min_components）时不出分。
     """
+    need = MACRO_PARAMS["min_components"] if min_n is None else min_n
     used = [c for c in components if c.get("heat") is not None]
     missing = [c["name"] for c in components if c.get("heat") is None]
-    if len(used) < MACRO_PARAMS["min_components"]:
+    if len(used) < need:
         score = None
     else:
         score = round(sum(c["heat"] for c in used) / len(used), 1)
     return {"score": score, **band_of(score), "used": len(used), "total": len(components), "missing": missing}
+
+
+def split_temperature(components: list[dict]) -> dict[str, Any]:
+    """按 group 拆成估值分、资金分两个子分数，总分 = 两个子分数的平均。
+
+    总分要求两个子分数都在：只有一边时给出总分，等于把那一边冒充成"全貌"。
+    资金分里如果用到了按成交量推算的成交额，会标 estimated，提醒这一项精度较低。
+    """
+    need = MACRO_PARAMS["min_sub_components"]
+    val = temperature([c for c in components if c.get("group") == "valuation"], need)
+    flow = temperature([c for c in components if c.get("group") == "flow"], need)
+    flow["estimated"] = any(c.get("estimated") for c in components if c.get("group") == "flow" and c.get("heat") is not None)
+    if val["score"] is not None and flow["score"] is not None:
+        score = round((val["score"] + flow["score"]) / 2, 1)
+    else:
+        score = None
+    band = band_of(score)
+    if score is None and (val["score"] is not None or flow["score"] is not None):
+        band = {"label": "数据不足", "tip": "估值分和资金分只取到一个，不合成总分；请看下方单项"}
+    return {"score": score, **band, "valuation": val, "flow": flow,
+            "used": val["used"] + flow["used"], "total": val["total"] + flow["total"],
+            "missing": val["missing"] + flow["missing"]}
 
 
 def etf_changes(latest: dict[str, dict], lagged: dict[int, dict[str, dict]]) -> dict[str, Any]:
@@ -620,17 +648,18 @@ def _components(val: list[dict], erp: dict, turnover: dict, margin: dict) -> lis
     v300, vall = val[0], val[1]
     erp_pct = erp.get("erp_pct")
     return [
-        {"key": "pe_csi300", "name": "沪深300 PE 分位", "value": v300.get("pe"), "unit": "倍",
+        {"key": "pe_csi300", "group": "valuation", "name": "沪深300 PE 分位", "value": v300.get("pe"), "unit": "倍",
          "pct": v300.get("pe_pct"), "heat": v300.get("pe_pct"), "window": "近10年", "source": v300.get("pe_source")},
-        {"key": "pe_csiall", "name": "中证全指 PE 分位", "value": vall.get("pe"), "unit": "倍",
+        {"key": "pe_csiall", "group": "valuation", "name": "中证全指 PE 分位", "value": vall.get("pe"), "unit": "倍",
          "pct": vall.get("pe_pct"), "heat": vall.get("pe_pct"), "window": "近10年", "source": vall.get("pe_source")},
         # ERP 越高代表股票越便宜，所以热度取反
-        {"key": "erp", "name": "股债性价比 ERP（反向）", "value": erp.get("erp"), "unit": "%",
+        {"key": "erp", "group": "valuation", "name": "股债性价比 ERP（反向）", "value": erp.get("erp"), "unit": "%",
          "pct": erp_pct, "heat": round(100 - erp_pct, 1) if erp_pct is not None else None,
          "window": "近10年", "source": "沪深300 PE + 10年国债"},
-        {"key": "turnover", "name": "成交额 20 日均值分位", "value": turnover.get("ma20_yi"), "unit": "亿",
-         "pct": turnover.get("pct"), "heat": turnover.get("pct"), "window": "近约2年", "source": turnover.get("source")},
-        {"key": "margin", "name": "两融余额分位", "value": margin.get("balance_yi"), "unit": "亿",
+        {"key": "turnover", "group": "flow", "name": "成交额 20 日均值分位", "value": turnover.get("ma20_yi"), "unit": "亿",
+         "pct": turnover.get("pct"), "heat": turnover.get("pct"), "window": "近约2年", "source": turnover.get("source"),
+         "estimated": bool(turnover.get("estimated"))},
+        {"key": "margin", "group": "flow", "name": "两融余额分位", "value": margin.get("balance_yi"), "unit": "亿",
          "pct": margin.get("pct"), "heat": margin.get("pct"), "window": "近约2年", "source": margin.get("source")},
     ]
 
@@ -641,6 +670,7 @@ def _summary(payload: dict) -> dict[str, Any]:
     v = {i["key"]: i for i in payload.get("valuation") or []}
     return {
         "score": t.get("score"), "label": t.get("label"), "used": t.get("used"),
+        "valuation_score": (t.get("valuation") or {}).get("score"), "flow_score": (t.get("flow") or {}).get("score"),
         "components": {c["key"]: {"value": c.get("value"), "pct": c.get("pct")} for c in payload.get("components") or []},
         "pe_csi300": (v.get("csi300") or {}).get("pe"), "pe_csiall": (v.get("csiall") or {}).get("pe"),
         "erp": (payload.get("erp") or {}).get("erp"), "cn10y": (payload.get("rates") or {}).get("cn10y"),
@@ -700,7 +730,7 @@ async def overview(force: bool = False) -> dict[str, Any]:
     components = _components(valuation, erp, turnover, margin)
     payload: dict[str, Any] = {
         "as_of": str(last_trade_day()),
-        "temperature": temperature(components),
+        "temperature": split_temperature(components),
         "components": components,
         "valuation": valuation,
         "erp": erp,
@@ -711,7 +741,7 @@ async def overview(force: bool = False) -> dict[str, Any]:
         "futures": fut,
         "gaps": gaps,
         "params": {k: v for k, v in MACRO_PARAMS.items() if not isinstance(v, tuple)},
-        "disclaimer": "温度分是各指标历史分位的等权平均，属于经验规则，没有经过择时回测验证",
+        "disclaimer": "估值分、资金分各为其组件历史分位的等权平均，总分为两者平均；属于经验规则，没有经过择时回测验证",
         "meta": {
             "sources": {
                 "pe_csi300": getattr(pe300, "source", "none"), "pe_csiall": getattr(peall, "source", "none"),
