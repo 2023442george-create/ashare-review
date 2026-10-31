@@ -194,16 +194,21 @@ def load_sentiment_history(days: int = 60) -> list[dict[str, Any]]:
     from .utils import normalize_date
 
     with _lock:
-        rows = conn().execute("SELECT trade_date,payload FROM sentiment_daily").fetchall()
-    out = []
+        rows = conn().execute("SELECT trade_date,payload,updated_at FROM sentiment_daily").fetchall()
+    # 旧版本可能混存 20261023 / 2026-10-23 两行，统一日期后同一天只保留最后写入的那条，
+    # 否则情绪曲线同一天出现两个点，周期判定也会把它们当成两个交易日。
+    latest: dict[str, tuple[str, dict[str, Any]]] = {}
     for r in rows:
         try:
             d = json.loads(r["payload"])
         except Exception:
             continue
-        d["trade_date"] = normalize_date(r["trade_date"])
-        out.append(d)
-    # 旧版本可能混存 20261023 / 2026-10-23，统一日期后再排序。
+        key = normalize_date(r["trade_date"])
+        d["trade_date"] = key
+        stamp = r["updated_at"] or ""
+        if key not in latest or stamp >= latest[key][0]:
+            latest[key] = (stamp, d)
+    out = [v for _, v in latest.values()]
     out.sort(key=lambda x: x["trade_date"])
     return out[-days:]
 

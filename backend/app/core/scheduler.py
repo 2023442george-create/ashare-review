@@ -98,6 +98,32 @@ async def job_lhb() -> None:
         log.warning("lhb refresh failed: %s", exc)
 
 
+async def catch_up() -> None:
+    """启动时补跑"今天"错过的收盘任务。
+
+    为什么需要：定时任务只在程序开着时才会触发。如果每天晚上才打开程序，
+    15:10 快照、15:14 账本冻结、15:25 宏观快照就永远不会执行，账本一直是空的。
+
+    只补当天、且只在收盘后：当晚补冻结用的仍是当天收盘后可见的数据，不涉及后视信息；
+    补冻结以前的日期则会用到之后的信息，所以刻意不做（与 README「不要事后补冻结」一致）。
+    """
+    from . import store
+
+    now = now_cn()
+    if not is_trade_day(now.date()) or now.hour * 60 + now.minute < 15 * 60 + 12:
+        return
+    d = str(now.date())
+    if store.load_snapshot(d) is None:
+        log.info("catch-up: 今日收盘快照缺失，补跑")
+        await job_close()
+    if not store.load_signals(d):
+        log.info("catch-up: 今日结果账本未冻结，补跑")
+        await job_ledger()
+    if not any(r.get("trade_date") == d for r in store.load_macro_history(5)):
+        log.info("catch-up: 今日宏观快照缺失，补跑")
+        await job_macro()
+
+
 def start() -> None:
     global _scheduler
     if not settings.scheduler_enabled or _scheduler is not None:

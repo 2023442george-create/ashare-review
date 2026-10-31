@@ -53,9 +53,12 @@ async def lifespan(app: FastAPI):
         # 节假日表过期不会报错，只会让交易日历悄悄算错，所以启动时必须吵一句
         log.warning(cal["warning"])
     scheduler.start()
-    if os.getenv("REVIEW_WARMUP", "1") == "1":
-        import asyncio
+    import asyncio
 
+    if settings.scheduler_enabled and not settings.offline:
+        # 晚上才开程序时，补跑今天错过的收盘快照 / 账本冻结 / 宏观快照
+        asyncio.create_task(scheduler.catch_up())
+    if os.getenv("REVIEW_WARMUP", "1") == "1":
         asyncio.create_task(warmup())
     yield
     scheduler.stop()

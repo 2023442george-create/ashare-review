@@ -74,6 +74,45 @@ class OnlineFailureTests(_Mode):
         self.assertTrue(report._may_save_snapshot("2026-10-28", {"data_quality": {"decision_enabled": False}}))
 
 
+class SentimentHistoryDedupTests(unittest.TestCase):
+    def test_mixed_date_formats_collapse_to_latest(self):
+        c = store.conn()
+        c.execute("INSERT OR REPLACE INTO sentiment_daily VALUES('20250103','{\"score\":1}','2025-01-03 15:10:00')")
+        c.execute("INSERT OR REPLACE INTO sentiment_daily VALUES('2025-01-03','{\"score\":2}','2025-01-03 21:00:00')")
+        c.commit()
+        rows = [r for r in store.load_sentiment_history(1000) if r["trade_date"] == "2025-01-03"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["score"], 2)
+
+
+class CatchUpTests(unittest.TestCase):
+    def _run(self, when):
+        from app.core import scheduler
+        calls = []
+        orig = (scheduler.now_cn, scheduler.job_close, scheduler.job_ledger, scheduler.job_macro)
+
+        async def rec(name):
+            calls.append(name)
+        scheduler.now_cn = lambda: when
+        scheduler.job_close = lambda: rec("close")
+        scheduler.job_ledger = lambda: rec("ledger")
+        scheduler.job_macro = lambda: rec("macro")
+        try:
+            asyncio.run(scheduler.catch_up())
+        finally:
+            scheduler.now_cn, scheduler.job_close, scheduler.job_ledger, scheduler.job_macro = orig
+        return calls
+
+    def test_evening_start_runs_missed_jobs(self):
+        from app.core.utils import CN_TZ
+        self.assertEqual(self._run(dt.datetime(2026, 11, 2, 21, 30, tzinfo=CN_TZ)), ["close", "ledger", "macro"])
+
+    def test_no_catch_up_before_close_or_on_holiday(self):
+        from app.core.utils import CN_TZ
+        self.assertEqual(self._run(dt.datetime(2026, 11, 2, 10, 0, tzinfo=CN_TZ)), [])
+        self.assertEqual(self._run(dt.datetime(2026, 10, 1, 21, 0, tzinfo=CN_TZ)), [])   # 国庆
+
+
 class HolidayCoverageTests(unittest.TestCase):
     def test_missing_year_is_reported(self):
         cov = holiday_coverage(dt.date(2099, 3, 1))
