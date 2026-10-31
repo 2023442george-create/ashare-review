@@ -10,7 +10,7 @@ from ..core import cache, params, regime, store
 from ..core.config import backend_freshness, settings, static_freshness
 from ..core import http
 from ..core.http import SOURCE_STATS
-from ..core.utils import last_trade_day
+from ..core.utils import holiday_coverage, last_trade_day
 from ..services import (auction as auction_svc, globalmarket, lhb as lhb_svc, limitup, macro, market,
                         news as news_svc, reconcile as reconcile_svc, report as report_svc,
                         screener as screener_svc, sectors, sentiment, track as track_svc)
@@ -43,6 +43,7 @@ async def health() -> dict:
         "trade_date": str(last_trade_day()),
         "frontend": static_freshness(),
         "backend": backend_freshness(),
+        "calendar": holiday_coverage(),
     }
 
 

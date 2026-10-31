@@ -196,7 +196,9 @@ async def quotes(force: bool = False) -> cache.Sourced:
                 continue
             if len(out) == len(assets):
                 break
-        _fill_mock(assets, out)
+        # 在线模式下取不到的品种保持缺失（界面显示"—"并计入 missing），不再填样例价格冒充行情
+        for a in assets:
+            out.setdefault(a.key, {**_empty(a), "source": "none"})
         for d in out.values():
             if d.get("time") and _is_stale(d.get("time")):
                 d["stale"] = True

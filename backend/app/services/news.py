@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import re
 from typing import Any
 
@@ -111,9 +112,7 @@ async def aggregate(limit: int = 120, force: bool = False, sources: list[str] | 
         if res:
             ok_sources.append(n)
             rows.extend(res)
-    if not rows:
-        rows = _src_mock(limit)
-        ok_sources = ["mock"]
+    # 在线模式全部失败时返回空，绝不拿样例新闻冒充真实快讯（样例只在离线模式下由 feed() 显式选用）
 
     seen: set[str] = set()
     merged: list[dict] = []
@@ -167,7 +166,9 @@ def _is_important(title: str, summary: str) -> bool:
 
 async def _safe(fn: Any, limit: int) -> list[dict]:
     try:
-        res = await fn(limit)
+        res = fn(limit)
+        if inspect.isawaitable(res):   # 样例源是同步函数，其余是协程
+            res = await res
         return res if isinstance(res, list) else []
     except Exception:  # noqa: BLE001
         return []
@@ -193,8 +194,10 @@ def tag_stat(items: list[dict]) -> list[dict]:
 
 async def feed(limit: int = 120, source: str = "", tag: str = "", keyword: str = "",
                force: bool = False) -> dict:
+    # 名为 mock 的提供者只在离线模式启用，multi 只在在线模式启用（cache.filter_providers 保证）
     data = await cache.chain(
-        [("multi", lambda: aggregate(limit=max(limit, 150), force=force))],
+        [("multi", lambda: aggregate(limit=max(limit, 150), force=force)),
+         ("mock", lambda: aggregate(limit=max(limit, 150), force=force, sources=["mock"]))],
         cache_key=f"news:{max(limit,150)}", ttl=settings.ttl_news, force=force,
         validator=lambda r: bool(r) and bool(r.get("items")),
     )

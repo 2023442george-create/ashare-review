@@ -35,6 +35,10 @@
           未连接到后端服务（{{ apiOrigin }}）。请先启动：<b>python backend\run.py</b> 或 <b>.\scripts\start.ps1</b>，
           然后刷新本页面。若使用 <b>npm run dev</b>，请确认 vite 代理指向后端实际监听的端口。
         </div>
+        <!-- 节假日表缺年份时交易日历会悄悄算错，必须显眼提示 -->
+        <div v-if="store.health && store.health.calendar && store.health.calendar.warning" class="err" style="margin-bottom:12px">
+          {{ store.health.calendar.warning }}
+        </div>
         <router-view v-slot="{ Component }">
           <keep-alive :max="6"><component :is="Component" :key="route.fullPath" /></keep-alive>
         </router-view>

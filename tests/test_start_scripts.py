@@ -71,8 +71,10 @@ class PowerShellStartTests(unittest.TestCase):
     def test_default_port_matches_the_backend_default(self):
         """脚本兜底端口必须和 run.py 的兜底端口一致，否则同一个项目有两个"默认端口"。"""
         run_py = (ROOT / "backend" / "run.py").read_text(encoding="utf-8")
-        m = re.search(r'REVIEW_PORT",\s*"(\d+)"', run_py)
-        self.assertIsNotNone(m, "run.py 里没找到 REVIEW_PORT 兜底值")
+        # run.py 的 REVIEW_PORT 默认值是 "0"（= 自动挑端口），真正的兜底端口是候选列表的第一个。
+        # 旧版测试读的是 REVIEW_PORT 默认值，run.py 改成自动选端口后这条测试就一直在误报。
+        m = re.search(r"CANDIDATES\s*=\s*\[\s*(\d+)", run_py)
+        self.assertIsNotNone(m, "run.py 里没找到 CANDIDATES 候选端口列表")
         default = m.group(1)
         self.assertRegex(self.text, r"else\s*\{\s*" + default + r"\s*\}",
                          f"start.ps1 的兜底端口应当是 {default}")

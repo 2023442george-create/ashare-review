@@ -153,6 +153,23 @@ def apply_reconcile_gate(quality: dict, recon: dict, senti: dict | None = None) 
     return q
 
 
+def _may_save_snapshot(d: str, payload: dict[str, Any]) -> bool:
+    """决定这份已收盘报告能不能写入快照。
+
+    - 离线样例模式不写：样例快照会被当成历史报告读出来
+    - 已有一份"可决策"的快照时，不允许被"禁止决策"的新快照覆盖：
+      21:00 补拉龙虎榜时如果网络抖动，15:10 存好的完整快照会被一份残缺快照盖掉
+    """
+    from ..core.config import settings
+
+    if settings.offline:
+        return False
+    if (payload.get("data_quality") or {}).get("decision_enabled"):
+        return True
+    old = store.load_snapshot(d)
+    return not (old and (old.get("data_quality") or {}).get("decision_enabled"))
+
+
 def _is_final_snapshot(d: str) -> bool:
     """只有已收盘的交易日快照可冻结，盘中反复刷新不得覆盖成历史。"""
     now = now_cn()
@@ -319,7 +336,7 @@ async def build(date: str | None = None, force: bool = False) -> dict:
                     "news": nw.get("sources_ok"), "lhb": (lhb_res.meta() or {}).get("source") if hasattr(lhb_res, "meta") else lhb_res.source},
     }
     payload["markdown"] = to_markdown(payload)
-    if payload["is_final"]:
+    if payload["is_final"] and _may_save_snapshot(d, payload):
         store.save_snapshot(d, {k: v for k, v in payload.items() if k != "markdown"})
     return payload
 

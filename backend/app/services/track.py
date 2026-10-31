@@ -80,6 +80,9 @@ def _payload_of(item: dict[str, Any]) -> dict[str, Any]:
 async def freeze(date: str | None = None, strategies: tuple[str, ...] | None = None) -> dict[str, Any]:
     """冻结某交易日的信号。幂等：重跑只更新内容，不改写首次 frozen_at。"""
     target = normalize_date(date)
+    if settings.offline:
+        # 账本不可重建：样例股票一旦冻进去，就再也分不清哪些是真信号
+        return {"ok": False, "date": target, "frozen": 0, "reason": "离线样例模式不写结果账本"}
     if not _is_closed(target):
         return {"ok": False, "date": target, "frozen": 0,
                 "reason": "目标交易日尚未收盘（15:05 前），盘中冻结会把未定型的数据写进账本"}
@@ -150,6 +153,9 @@ async def settle(date: str | None = None, horizons: tuple[int, ...] = HORIZONS,
     strategy 可限定只结算某一个策略。用途：改了成本模型后只重算受影响的那部分，
     而不是把整个账本推倒重来。
     """
+    if settings.offline:
+        # 样例行情算出的"前瞻收益"写进 signal_outcome 同样会永久污染战绩
+        return {"ok": False, "settled": 0, "reason": "离线样例模式不结算结果账本"}
     dates = [normalize_date(date)] if date else store.signal_dates()[-max_dates:]
     if not dates:
         return {"ok": False, "settled": 0, "reason": "账本为空，先执行 freeze"}

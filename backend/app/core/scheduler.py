@@ -37,6 +37,9 @@ async def job_intraday() -> None:
 
 
 async def job_close() -> None:
+    """15:10 收盘快照。非交易日（节假日的周一到周五）不跑，否则会用节后数据重写节前快照。"""
+    if not is_trade_day(now_cn().date()):
+        return
     d = str(last_trade_day())
     try:
         await limitup.pool("zt", d, force=True)
@@ -83,6 +86,9 @@ async def job_macro() -> None:
 
 
 async def job_lhb() -> None:
+    """21:00 补拉龙虎榜并重建报告。非交易日不跑。"""
+    if not is_trade_day(now_cn().date()):
+        return
     d = str(last_trade_day())
     try:
         await lhb.daily(d, force=True)

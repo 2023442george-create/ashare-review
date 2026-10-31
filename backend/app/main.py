@@ -46,6 +46,12 @@ async def lifespan(app: FastAPI):
     if fresh["stale"]:
         # 旧产物会让新页面"不存在"、新字段渲染成空白，而且不报错，必须吵一句
         log.warning("前端产物过期：%s", fresh["reason"])
+    from .core.utils import holiday_coverage
+
+    cal = holiday_coverage()
+    if not cal["ok"]:
+        # 节假日表过期不会报错，只会让交易日历悄悄算错，所以启动时必须吵一句
+        log.warning(cal["warning"])
     scheduler.start()
     if os.getenv("REVIEW_WARMUP", "1") == "1":
         import asyncio

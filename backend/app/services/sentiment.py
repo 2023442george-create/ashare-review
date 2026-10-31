@@ -486,7 +486,17 @@ async def core(date: str | None = None, force: bool = False, save: bool = True) 
         },
     }
     # 查询历史日期不允许覆盖已存记录；只有最近收盘交易日的结果可落库。
-    if save and not historical:
+    # 另外两种情况也不落库：
+    # 1) 离线样例模式：样例数据写进历史会污染情绪周期曲线
+    # 2) 涨停池与涨跌分布都没取到：此时分数是按"0 家涨停"算出来的假分，
+    #    落库会覆盖当天的真实记录（例如盘中网络抖动的那一次刷新）
+    real = {"none", "mock", ""}
+    data_ok = zt.source not in real or br.source not in real
+    payload["data_quality"]["saved"] = bool(save and not historical and data_ok and not settings.offline)
+    if not data_ok and not settings.offline:
+        payload["data_quality"]["note"] = (payload["data_quality"]["note"] + "；" if payload["data_quality"]["note"] else "") + \
+            "涨停池与涨跌分布均不可用，本次分数不可信且未写入历史"
+    if payload["data_quality"]["saved"]:
         store.save_sentiment(payload["date"], {
             "score": total, "limit_up": metrics["limit_up"], "limit_down": metrics["limit_down"],
             "broken": metrics["broken"], "broken_rate": metrics["broken_rate"], "max_boards": max_b,

@@ -17,6 +17,24 @@ CN_HOLIDAYS: set[str] = {
 }
 
 
+def holiday_coverage(today: dt.date | None = None) -> dict[str, Any]:
+    """检查节假日表是否覆盖今年和（12 月起）明年。
+
+    为什么需要：表里没有的年份会把春节、国庆当成交易日——定时任务照跑、
+    结果账本按"节日当天开盘"去结算、历史窗口多算交易日，而且这些错误都不报错。
+    国务院办公厅一般在每年 11~12 月公布次年安排，公布后补进 CN_HOLIDAYS。
+    """
+    today = today or now_cn().date()
+    years = sorted({int(d[:4]) for d in CN_HOLIDAYS})
+    need = [today.year] + ([today.year + 1] if today.month == 12 else [])
+    missing = [y for y in need if y not in years]
+    return {
+        "years": years, "missing": missing, "ok": not missing,
+        "warning": (f"节假日表缺少 {'、'.join(map(str, missing))} 年，交易日历会把节假日当成交易日；"
+                    "请在 backend/app/core/utils.py 的 CN_HOLIDAYS 补上国务院公布的休市日期") if missing else "",
+    }
+
+
 def now_cn() -> dt.datetime:
     return dt.datetime.now(CN_TZ)
 

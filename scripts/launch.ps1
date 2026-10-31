@@ -99,12 +99,36 @@ if (-not (Test-Path $py)) { $py = 'python' }
 # ---------- 3. 前端产物 ----------
 $indexHtml = Join-Path $backend 'static\index.html'
 $needBuild = $Rebuild -or (-not (Test-Path $indexHtml))
+# 只判断"产物存不存在"不够：改过前端源码却不重建，新页面看不到、新字段显示空白，且不报错。
+# 与 start.ps1 同一规则：frontend 源码比 backend\static\index.html 新就重建。
+if (-not $needBuild) {
+  $srcPaths = @('src', 'index.html', 'package.json', 'vite.config.js') |
+              ForEach-Object { Join-Path (Join-Path $root 'frontend') $_ } | Where-Object { Test-Path $_ }
+  $newest = $null
+  if ($srcPaths) {
+    $newest = Get-ChildItem -Path $srcPaths -Recurse -File -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+  }
+  if ($newest -and $newest.LastWriteTimeUtc -gt (Get-Item $indexHtml).LastWriteTimeUtc) {
+    Write-Host "[i] 前端源码比构建产物新（$($newest.Name)），重新构建"
+    $needBuild = $true
+  }
+}
 if ($needBuild) {
   $npm = Get-Command npm -ErrorAction SilentlyContinue
   if ($npm) {
     Write-Host '[i] 构建前端...'
     Push-Location (Join-Path $root 'frontend')
-    try { & npm run build 2>&1 | Out-Null } catch { Write-Host "[!] 前端构建失败，继续启动（界面可能是旧版本）" }
+    # npm 的警告写在 stderr；在 Stop 模式下会被 PowerShell 升级成终止错误，构建期间临时放宽
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      $vite = (Test-Path 'node_modules\.bin\vite.cmd') -or (Test-Path 'node_modules\.bin\vite')
+      if (-not $vite) { & npm install --no-audit --no-fund 2>&1 | Out-Null }
+      & npm run build 2>&1 | Out-Null
+      if ($LASTEXITCODE -ne 0) { Write-Host '[!] 前端构建失败，继续启动（界面是旧版本）' }
+    } catch { Write-Host "[!] 前端构建失败，继续启动（界面可能是旧版本）" }
+    finally { $ErrorActionPreference = $prevEap }
     Pop-Location
   } else {
     Write-Host '[!] 未找到 npm，跳过前端构建'
