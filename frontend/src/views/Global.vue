@@ -22,7 +22,7 @@
             <div class="k">
               {{ it.name }}
               <span class="help" v-if="it.role" :title="it.role">?</span>
-              <span class="tag gray tiny" v-if="it.stale">数据偏旧</span>
+              <span class="tag gold tiny" v-if="it.stale" :title="`行情时间 ${it.time}，不参与信号`">数据偏旧</span>
             </div>
             <div class="between" style="margin-top:4px">
               <span class="v mono" :class="cls(it.pct)" style="font-size:18px">{{ num(it.price, it.price > 1000 ? 2 : 4) }}</span>
@@ -91,7 +91,7 @@ const map = [
 ]
 function groupSub(n) {
   return { 美股: '隔夜收盘，影响今日开盘情绪', 中概: 'A股/港股情绪的先行指标', 亚太: '今日盘中同步',
-    港股: '与A股同步交易', 汇率商品: '通胀、避险与外资流向', 期货: '★开盘前必看', 欧美: '欧洲时段', 利率: '全球估值分母' }[n] || ''
+    港股: '与A股同步交易', 汇率商品: '通胀、避险与外资流向', 期货: '★开盘前必看', 利率: '全球估值分母' }[n] || ''
 }
 onMounted(async () => { try { data.value = await api.global() } catch (e) { data.value = {} } })
 </script>

@@ -196,15 +196,6 @@ async def margin_history(days: int = 30) -> list[dict]:
     )
 
 
-async def hsgt_history(days: int = 30) -> list[dict]:
-    """沪深港通历史成交（北向实时净买入已停发，保留成交额口径）"""
-    return await datacenter(
-        "RPT_MUTUAL_DEAL_HISTORY",
-        filter_="(MUTUAL_TYPE=\"001\")",
-        sort_columns="TRADE_DATE", sort_types="-1", page_size=days,
-    )
-
-
 async def fast_news(limit: int = 60) -> list[dict]:
     """东财 7x24 快讯"""
     import time as _t
@@ -314,26 +305,19 @@ def parse_southbound(rows: list[dict]) -> list[list]:
 
 
 # ---------------- 限售股解禁（按日汇总） ----------------
-LIFT_CAP_KEYS = ("ACTUAL_FREE_MARKET_CAP", "FREE_MARKET_CAP", "LIFT_MARKET_CAP")
-LIFT_NUM_KEYS = ("LIFT_NUM", "FREE_NUM", "STOCK_NUM")
-
-
 def parse_lift_days(rows: list[dict]) -> list[dict]:
     """解析每日解禁汇总 → [{date, count, cap_yi}]（升序）。
 
-    字段名没有公开文档：先按候选名取，取不到时按列序取（第 2 列家数、第 4 列实际解禁市值，
-    与东财页面表头顺序一致）。实际解禁市值单位为万元。
+    LIFT_ORG_NUM 解禁家数；LIFT_NUM 是解禁股数（万股），不是家数；
+    MARKET_CAP 实际解禁市值（万元），PLAN_MARKET_CAP 是计划值，不用。
     """
     out = []
     for r in rows or []:
-        keys = list(r.keys())
-        d = str(r.get("FREE_DATE") or (r.get(keys[0]) if keys else "") or "")[:10]
-        cap_key = next((k for k in LIFT_CAP_KEYS if k in r), None) or (keys[3] if len(keys) > 3 else None)
-        num_key = next((k for k in LIFT_NUM_KEYS if k in r), None) or (keys[1] if len(keys) > 1 else None)
-        cap = fnum(r.get(cap_key)) if cap_key else None
+        d = str(r.get("FREE_DATE") or "")[:10]
+        cap = fnum(r.get("MARKET_CAP"))
         if not d or cap is None:
             continue
-        num = fnum(r.get(num_key)) if num_key else None
+        num = fnum(r.get("LIFT_ORG_NUM"))
         out.append({"date": d, "count": int(num) if num is not None else None, "cap_yi": round(cap / 1e4, 2)})
     out.sort(key=lambda x: x["date"])
     return out

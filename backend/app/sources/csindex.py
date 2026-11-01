@@ -6,9 +6,6 @@
 
 接口：
 - /csindex-home/perf/index-perf  指数日行情，带滚动市盈率字段 peg（只有 PE，没有 PB）
-
-注意：本仓库所在环境无法直连该站，字段名依据公开资料编写。
-本机首次运行请打开 /api/macro/probe 确认 missing_fields 为空。
 """
 from __future__ import annotations
 

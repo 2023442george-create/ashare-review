@@ -76,16 +76,6 @@ async def market_kline(symbol: str = "sh000001", days: int = 120, force: bool = 
     return {"symbol": symbol, "items": res.data or [], "meta": res.meta()}
 
 
-@router.get("/market/margin")
-async def market_margin(force: bool = False) -> dict:
-    return _wrap(await market.margin(force=force))
-
-
-@router.get("/market/hsgt")
-async def market_hsgt(force: bool = False) -> dict:
-    return _wrap(await market.hsgt(force=force))
-
-
 # ---------------- 情绪 ----------------
 @router.get("/sentiment")
 async def sentiment_core(date: str = "", force: bool = False) -> dict:
@@ -140,11 +130,6 @@ async def sector_stockflow(limit: int = 50, sort: str = "f62", force: bool = Fal
 @router.get("/lhb")
 async def lhb_daily(date: str = "", force: bool = False) -> dict:
     return _wrap(await lhb_svc.daily(date or None, force=force))
-
-
-@router.get("/lhb/focus")
-async def lhb_focus(date: str = "") -> dict:
-    return {"items": await lhb_svc.focus_stocks(date or None)}
 
 
 # ---------------- 外围 ----------------
@@ -354,7 +339,7 @@ async def meta_indicators() -> dict:
         "global": [{"key": a.key, "name": a.name, "group": a.group, "role": a.role} for a in GLOBAL_ASSETS],
         "sentiment": [
             {"key": "limit_up", "name": "涨停家数", "how": "≥90家=情绪强，40家以下=情绪弱；连续3天上升=发酵期"},
-            {"key": "max_boards", "name": "最高连板（空间板）", "how": "决定市场想象力。5板以上才有主升行情；空间板断板=情绪见顶信号"},
+            {"key": "max_boards", "name": "最高连板", "how": "连续涨停最多的票有几板，决定市场想象力。5板以上才有主升行情；空间板断板=情绪见顶信号"},
             {"key": "broken_rate", "name": "炸板率", "how": "炸板/(涨停+炸板)。<20%封板坚决；>35%分歧巨大，次日大概率核按钮"},
             {"key": "prev_premium", "name": "昨日涨停今日溢价", "how": "收盘价相对昨收的等权涨跌幅，代表隔日结果，不是必然可成交收益。另看开盘隔夜溢价与开盘可成交样本日内收益"},
             {"key": "promote_rate", "name": "晋级率", "how": "昨日涨停今日继续涨停比例。>30%梯队健康；<15%说明接力资金撤退"},
@@ -363,8 +348,45 @@ async def meta_indicators() -> dict:
             {"key": "seal_ratio", "name": "封成比", "how": "封单额/成交额。>30%封板坚决，<5%随时可能开板"},
             {"key": "fund_mv_ratio", "name": "封单/流通市值", "how": ">3%属于强力封板，龙头特征"},
             {"key": "turnover_total", "name": "两市成交额", "how": "<8000亿地量冰点；1.2-1.8万亿温和；>1.8万亿增量入场。看5日均量趋势而非绝对值"},
-            {"key": "main_flow", "name": "主力净流入", "how": "板块主力净流入连续为正+涨停家数多=主线；净流出但股价大涨=拉高出货嫌疑"},
+            {"key": "main_flow", "name": "主力净流入", "how": "大单买入减大单卖出的估算值，不是真实账户数据。板块连续净流入+涨停多=主线；净流出但股价大涨=拉高出货嫌疑"},
             {"key": "auction_gap", "name": "竞价高开幅度", "how": "09:15-09:25 匹配价/昨收。高开过低说明承接弱，过高说明一致转分歧；超过剧本上限不追"},
             {"key": "auction_amount_ratio", "name": "竞价量能比", "how": "集合竞价成交额/候选日成交额，用于确认资金是否真的来；首板参考线2%、接力3%"},
+        ],
+        # 其余页面的指标说明：name 是界面文字，how 一两句讲清是什么、怎么看
+        "macro": [
+            {"key": "temperature", "name": "宏观温度", "how": "0~100，把估值和资金的历史分位合成一个数，看月度、季度的攻守，不看单日。<40 偏冷偏便宜，>60 偏热偏贵"},
+            {"key": "pe", "name": "滚动 PE", "how": "指数总市值 / 最近 12 个月净利润，即现在的价格是几年利润。看它在过去 10 年的分位，不看绝对值"},
+            {"key": "csi300", "name": "沪深300 PE", "how": "大盘蓝筹的估值。分位 <30% 偏便宜，>70% 偏贵"},
+            {"key": "csiall", "name": "中证全指 PE", "how": "几乎全部 A 股的估值，比沪深300更能代表中小盘。分位 <30% 偏便宜，>70% 偏贵"},
+            {"key": "erp", "name": "股债性价比 ERP", "how": "沪深300盈利收益率（1/PE）− 10年国债收益率，即买股票比买国债多赚多少。越高股票越划算"},
+            {"key": "cn10y", "name": "10年期国债", "how": "无风险利率的基准。下行利好股票估值；同时也反映市场对经济偏悲观"},
+            {"key": "rates", "name": "利率", "how": "中美利差 = 中国10年 − 美国10年，负得越多，人民币和外资流入压力越大。期限利差看下方说明"},
+            {"key": "margin", "name": "两融余额", "how": "投资者借钱买股（融资）和借股卖出（融券）的余额，代表杠杆资金规模。数据次日才公布，比其他指标晚一天"},
+            {"key": "flows", "name": "资金水位", "how": "成交额看场内有多少钱在交易；两融余额和融资买入占比看杠杆资金有多积极。分位越高越热"},
+            {"key": "etf", "name": "宽基 ETF 份额", "how": "看份额不看规模：规模会随净值涨跌，份额变化才是真实申购赎回。下跌中份额大增，常被视为汇金等长线资金托底"},
+            {"key": "futures", "name": "股指期货会员持仓", "how": "中金所每日公布前 20 名期货公司的多空单。空单多是机构对冲，净空常态化，要看变化：快速加空=加对冲或看空"},
+            {"key": "basis", "name": "主力合约基差", "how": "期货价 − 现货价。负数叫贴水，年化后可跨合约比较。贴水加深=对冲增多或看空，收敛=情绪回暖"},
+            {"key": "style", "name": "风格比值", "how": "两个指数相除，比值涨说明分子更强。不看绝对值，看方向和历史分位，用来判断资金偏小盘还是大盘、偏防守还是进攻"},
+            {"key": "ah", "name": "AH 溢价指数", "how": "同一批公司 A 股相对 H 股贵多少，100 表示同价。越高 A 股相对越贵、港股越划算"},
+            {"key": "south", "name": "南向资金", "how": "内地资金经港股通买港股的净额。持续净买入说明资金更看好港股，常与 AH 溢价走高同时出现"},
+            {"key": "lift", "name": "限售股解禁", "how": "到期可以卖出的限售股市值，是潜在供给而不是必然抛售。未来 30 日明显高于过去 30 日时注意压力"},
+        ],
+        "limitup": [
+            {"key": "ladder", "name": "连板天梯", "how": "按连续涨停天数分层。层层都有票=接力通畅；中间缺层叫断层，说明晋级难，不宜追高"},
+            {"key": "board_type", "name": "板型", "how": "一字=开盘封死基本买不到；T字=开盘封住后开过板；秒板=开盘 5 分钟内封住；换手板=盘中充分换手后封住；烂板=炸板≥2次；尾盘板=14:45 后才封"},
+            {"key": "fund", "name": "封单额", "how": "收盘时封在涨停价上的买单金额，越大次日越容易继续走强"},
+            {"key": "first_time", "name": "首封", "how": "第一次封上涨停的时间，越早通常越强；末封是最后一次封住的时间，炸板后回封才会不同"},
+            {"key": "days_board", "name": "几天几板", "how": "如 3天2板：最近 3 个交易日里有 2 个涨停，反映股性活跃度，和严格连板数不同"},
+        ],
+        "sectors": [
+            {"key": "mainline", "name": "主线四维确认", "how": "板块内涨停≥4家、最高板≥2、板块涨幅>2%、主力净流入>0，四项同时成立才算确认；缺一项说明可能只是资金短线扎堆"},
+            {"key": "main_flow_ratio", "name": "净占比", "how": "主力净流入 / 成交额，大小不同的板块用它比较才公平"},
+            {"key": "pct_nd", "name": "5日/20日涨幅", "how": "看板块的持续性：当日大涨但 20 日仍弱多为反弹，5 日和 20 日同步走强才像趋势"},
+        ],
+        "lhb": [
+            {"key": "lhb_net", "name": "龙虎榜净额", "how": "上榜席位买入 − 卖出，只含前五大买卖席位，不是这只票全天的资金净流入"},
+            {"key": "inst_net", "name": "机构专用净买入", "how": "所有机构专用席位的合计净额。持续净买入的题材通常比纯游资票持续性好"},
+            {"key": "north_net", "name": "股通席位净买入", "how": "仅统计上榜个股的沪/深股通专用席位，不等于全市场北向净买入（后者已于 2024-08 停止披露）"},
+            {"key": "win_3day", "name": "3日胜率", "how": "该席位上榜后 3 个交易日上涨的比例，看的是历史统计，次数太少时没有参考意义"},
         ],
     }

@@ -105,25 +105,40 @@ def _parse_sina(f: list[str], kind: str) -> dict:
                     "open": fnum(f[5]) if len(f) > 5 else None,
                     "high": fnum(f[6]) if len(f) > 6 else None,
                     "low": fnum(f[7]) if len(f) > 7 else None, "prev_close": prev}
-        if kind in ("int", "znb", "b") and len(f) >= 4:
+        if kind == "znb" and len(f) >= 4:
+            # znb_xxx: 1最新 2涨跌 3涨跌幅 6日期 7时间 8今开 9昨收 10最高 11最低（部分品种只有前 6 列）
+            full = len(f) > 11
             return {"price": fnum(f[1]), "change": fnum(f[2]), "pct": fnum(f[3]),
-                    "time": f[4] if len(f) > 4 else ""}
+                    "time": f"{f[6]} {f[7]}" if full else "",
+                    "open": fnum(f[8]) if full else None, "prev_close": fnum(f[9]) if full else None,
+                    "high": fnum(f[10]) if full else None, "low": fnum(f[11]) if full else None}
         if kind == "hf" and len(f) >= 9:
+            # hf_xxx: 0最新 4最高 5最低 6时间 7昨结 8今开 12日期
             price = fnum(f[0])
             prev = fnum(f[7])
             return {"price": price, "prev_close": prev, "open": fnum(f[8]), "high": fnum(f[4]),
-                    "low": fnum(f[5]), "time": f[6],
+                    "low": fnum(f[5]), "time": f"{f[12] if len(f) > 12 else ''} {f[6]}".strip(),
                     "change": round(price - prev, 4) if price is not None and prev else None,
                     "pct": round((price / prev - 1) * 100, 3) if price and prev else None}
         if kind == "fx" and len(f) >= 12:
-            # fx_sxxxx: 0时间 1买价 2卖价 3最新 5最高 7最低 8昨收 9名称 17日期
+            # fx_sxxxx: 0时间 3最新 5今开 6最高 7最低 8最新 9名称 10涨跌幅 11涨跌 17日期。没有昨收列
             price = fnum(f[3]) or fnum(f[1])
-            prev = fnum(f[8])
-            chg = round(price - prev, 5) if price is not None and prev else None
-            pctv = round((price / prev - 1) * 100, 4) if price and prev else None
-            return {"price": price, "prev_close": prev, "high": fnum(f[5]), "low": fnum(f[7]),
+            chg = fnum(f[11])
+            return {"price": price, "prev_close": round(price - chg, 5) if price is not None and chg is not None else None,
+                    "open": fnum(f[5]), "high": fnum(f[6]), "low": fnum(f[7]),
                     "time": f"{f[17] if len(f) > 17 else ''} {f[0]}".strip(),
-                    "change": chg, "pct": pctv}
+                    "change": chg, "pct": fnum(f[10])}
+        if kind == "dini" and len(f) >= 11:
+            # DINIW: 0时间 3昨收 5今开 6最高 7最低 8最新 10日期
+            price, prev = fnum(f[8]), fnum(f[3])
+            return {"price": price, "prev_close": prev, "open": fnum(f[5]), "high": fnum(f[6]), "low": fnum(f[7]),
+                    "time": f"{f[10]} {f[0]}",
+                    "change": round(price - prev, 4) if price is not None and prev else None,
+                    "pct": round((price / prev - 1) * 100, 3) if price and prev else None}
+        if kind == "bond" and len(f) >= 14:
+            # globalbd_xxx: 1最新收益率 4最高 5最低 7涨跌幅 8涨跌(百分点) 12日期 13时间
+            return {"price": fnum(f[1]), "high": fnum(f[4]), "low": fnum(f[5]), "pct": fnum(f[7]),
+                    "change": fnum(f[8]), "time": f"{f[12]} {f[13]}"}
         if kind == "stock":
             return {"price": fnum(f[3]), "open": fnum(f[1]), "prev_close": fnum(f[2]),
                     "high": fnum(f[4]), "low": fnum(f[5])}
@@ -224,7 +239,7 @@ async def quotes(force: bool = False) -> cache.Sourced:
 
 
 # ---------------- 隔夜/外围信号解读 ----------------
-def signals(items: list[dict]) -> list[dict]:
+def signals(items: list[dict]) -> dict:
     usable = [d for d in items if eligible_for_signal(d)]
     excluded = [d.get("key") for d in items if not eligible_for_signal(d)]
     m = {d["key"]: d for d in usable}

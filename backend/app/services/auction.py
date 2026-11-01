@@ -116,9 +116,12 @@ async def build(strategy: str = "first_board", date: str | None = None, force: b
     for item in candidates:
         q = quotes.get(item["code"]) or {}
         gap, sealed = _quote_gap(q)
-        quote_amount = fnum(q.get("amount"))
+        # 竞价窗口之外，行情是候选日或盘中的数，不是竞价匹配价/竞价额，不能当高开幅度展示
+        quote_amount = fnum(q.get("amount")) if sess["actionable"] else None
+        if not sess["actionable"]:
+            gap, sealed = None, False
         prev_amount = fnum(item.get("amount"))
-        ratio = round(quote_amount / prev_amount * 100, 2) if sess["actionable"] and quote_amount and prev_amount else None
+        ratio = round(quote_amount / prev_amount * 100, 2) if quote_amount and prev_amount else None
         decision = judge_auction(gap, sealed, ratio, strategy, sess["actionable"])
         rows.append({
             "code": item["code"], "name": item.get("name"), "score": item.get("score"),

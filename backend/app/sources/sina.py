@@ -3,7 +3,7 @@
 - hq.sinajs.cn/list=       A股/指数实时（必须带 Referer，GBK）
 - quotes.sina.cn           日 K 线（jsonp）
 - zhibo.sina.com.cn        7x24 财经直播（快讯）
-- 全球指数/外盘期货/外汇   gb_$dji、int_nikkei、znb_KOSPI、hf_CL、fx_susdcnh
+- 全球指数/外盘期货/外汇   gb_$dji、znb_NKY、znb_KOSPI、hf_CL、fx_susdcnh、DINIW、globalbd_us10yt
 """
 from __future__ import annotations
 
@@ -57,16 +57,6 @@ def parse_stock(f: list[str], code: str) -> dict | None:
         "date": f[30] if len(f) > 30 else "",
         "time": f[31] if len(f) > 31 else "",
     }
-
-
-async def quote(codes: list[str]) -> list[dict]:
-    raw = await quote_raw(codes)
-    out = []
-    for code, f in raw.items():
-        p = parse_stock(f, code)
-        if p:
-            out.append(p)
-    return out
 
 
 async def kline(symbol: str, scale: int = 240, count: int = 120) -> list[list]:

@@ -2,7 +2,7 @@
   <div class="stack">
     <div class="grid" style="grid-template-columns:repeat(6,1fr)">
       <StatCard label="情绪总分" :value="s.score ?? '—'" :color="scoreColor(s.score)" :bar="s.score"
-                :desc="bandDesc" :help="(s.score_band || {}).note" />
+                :desc="bandDesc" :help="'7 个因子加权的短线情绪，0~100。' + ((s.score_band || {}).note || '')" />
       <StatCard label="涨停家数" :value="m.limit_up ?? '—'" :desc="`首板${m.first_board_count ?? 0} / 连板${m.lianban_count ?? 0}`" :help="h('涨停家数')" />
       <StatCard label="跌停家数" :value="m.limit_down ?? 0" :color="(m.limit_down || 0) > 10 ? '#ff4d4f' : '#00b578'" :help="h('跌停家数')" />
       <StatCard label="炸板率" :value="pctv(m.broken_rate)" :color="(m.broken_rate || 0) > 35 ? '#ff4d4f' : '#ffb020'"

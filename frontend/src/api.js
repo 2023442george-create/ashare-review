@@ -16,8 +16,6 @@ export const api = {
 
   marketOverview: (force = false) => http.get('/market/overview', { params: { force } }),
   kline: (symbol, days = 120) => http.get('/market/kline', { params: { symbol, days } }),
-  margin: () => http.get('/market/margin'),
-  hsgt: () => http.get('/market/hsgt'),
 
   sentiment: (date = '', force = false) => http.get('/sentiment', { params: { date, force } }),
   sentimentHistory: (days = 60) => http.get('/sentiment/history', { params: { days } }),
@@ -31,7 +29,6 @@ export const api = {
   stockflow: (limit = 50) => http.get('/sectors/stockflow', { params: { limit } }),
 
   lhb: (date = '') => http.get('/lhb', { params: { date } }),
-  lhbFocus: (date = '') => http.get('/lhb/focus', { params: { date } }),
 
   global: (force = false) => http.get('/global', { params: { force } }),
 
@@ -65,9 +62,7 @@ export const api = {
   reconcile: (date = '') => http.get('/reconcile', { params: { date } }),
   researchParams: () => http.get('/research/params'),
   researchRegime: (date = '') => http.get('/research/regime', { params: { date } }),
-  researchTrials: (limit = 200) => http.get('/research/trials', { params: { limit } }),
 
-  sources: () => http.get('/settings/sources'),
   saveSources: (payload) => http.post('/settings/sources', payload),
   indicators: () => http.get('/meta/indicators'),
 }

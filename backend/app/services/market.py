@@ -6,7 +6,7 @@ from typing import Any
 from ..core import cache
 from ..core.assets import A_INDEXES, Asset
 from ..core.config import settings
-from ..core.utils import fnum, yi
+from ..core.utils import current_trade_date, fnum, yi
 from ..sources import eastmoney as em
 from ..sources import mock, sina, tencent
 
@@ -91,20 +91,24 @@ async def overview(force: bool = False) -> dict:
     amount_total = (fnum(sh.get("amount"), 0.0) or 0) + (fnum(sz.get("amount"), 0.0) or 0)
 
     th = await turnover_history(days=12, force=force)
-    totals = [r["amount"] for r in (th.get("items") or []) if r.get("amount")]
-    ma5_amount = round(sum(totals[-6:-1]) / 5, 0) if len(totals) >= 6 else None
-    prev_amount = totals[-2] if len(totals) >= 2 else None
+    # 只看今天之前的日子：K 线还没带今天这一行时，末尾那天就是昨天，不能再往前错一位
+    today = str(current_trade_date())
+    totals = [r["amount"] for r in (th.get("items") or []) if r.get("amount") and r["date"] < today]
+    ma5_amount = round(sum(totals[-5:]) / 5, 0) if len(totals) >= 5 else None
+    prev_amount = totals[-1] if totals else None
 
     items = []
     for a in A_INDEXES:
         d = quotes.get(a.key) or {}
+        high, low, prev = fnum(d.get("high")), fnum(d.get("low")), fnum(d.get("prev_close"))
         items.append({
             "key": a.key, "name": d.get("name") or a.name, "group": a.group, "role": a.role,
             "price": d.get("price"), "pct": d.get("pct"), "change": d.get("change"),
             "open": d.get("open"), "high": d.get("high"), "low": d.get("low"),
             "prev_close": d.get("prev_close"), "amount": d.get("amount"),
             "amount_yi": yi(fnum(d.get("amount"), 0.0)),
-            "amplitude": d.get("amplitude"),
+            # 只有腾讯直接给振幅，新浪/东财兜底时按高低价算
+            "amplitude": d.get("amplitude") or (round((high - low) / prev * 100, 2) if high and low and prev else None),
         })
 
     return {
@@ -175,8 +179,9 @@ async def kline(symbol: str = "sh000001", days: int = 120, force: bool = False) 
 async def turnover_history(days: int = 12, force: bool = False) -> dict:
     """两市成交额历史。
 
-    东财K线自带成交额则直接使用；若只能拿到腾讯/新浪K线（仅成交量），
-    用「今日成交额 / 今日成交量」折算系数推算历史成交额，趋势判断足够用。
+    东财、腾讯K线自带成交额则直接使用；若只能拿到新浪K线（仅成交量），
+    用「今日成交额 / 今日成交量」折算系数推算历史成交额，并标记 estimated。
+    这个推算把今天的股价水平套到全部历史上，时间拉长后偏差明显，所以只作兜底。
     """
     import asyncio
 
@@ -192,7 +197,7 @@ async def turnover_history(days: int = 12, force: bool = False) -> dict:
         today_amount = _f((quotes.get(key) or {}).get("amount"), 0.0) or 0
         has_amount = any(len(r) > 6 and r[6] for r in rows)
         if has_amount:
-            series[key] = [[r[0], _f(r[6], 0.0)] for r in rows if len(r) > 6]
+            series[key] = [[r[0], _f(r[6], 0.0)] for r in rows if len(r) > 6 and r[6]]
             continue
         vols = [[r[0], _f(r[5], 0.0)] for r in rows]
         if not vols or not vols[-1][1]:
@@ -201,69 +206,15 @@ async def turnover_history(days: int = 12, force: bool = False) -> dict:
         factor = today_amount / vols[-1][1] if today_amount else 0
         series[key] = [[d, round(v * factor, 0)] for d, v in vols]
 
-    dates = sorted({d for rows in series.values() for d, _ in rows})[-days:]
+    sh_map, sz_map = dict(series.get("sh000001") or []), dict(series.get("sz399001") or [])
+    dates = sorted(set(sh_map) | set(sz_map))[-days:]
     items = []
     for d in dates:
-        sh = dict(series.get("sh000001") or {}).get(d)
-        sz = dict(series.get("sz399001") or {}).get(d)
-        total = (sh or 0) + (sz or 0)
+        sh, sz = sh_map.get(d), sz_map.get(d)
+        # 只取到一个市场的那天不算两市合计：半边成交额会被读成"缩量一半"
+        total = sh + sz if sh and sz else 0
         items.append({"date": d, "sh": sh, "sz": sz, "amount": total or None,
                       "amount_yi": round(total / 1e8, 2) if total else None})
     src = sorted({(ks[0].source or ""), (ks[1].source or "")} - {""})
     return {"items": items, "source": "+".join(src) or "none",
             "estimated": not any(len(r) > 6 and r[6] for r in (ks[0].data or []))}
-
-
-async def margin(force: bool = False) -> cache.Sourced:
-    """两融余额（近30日）"""
-    async def _em():
-        rows = await em.margin_history(30)
-        out = []
-        for r in rows:
-            out.append({
-                "date": str(r.get("DIM_DATE", ""))[:10],
-                "rzye": fnum(r.get("RZYE"), 0.0),
-                "rqye": fnum(r.get("RQYE"), 0.0),
-                "rzrqye": fnum(r.get("RZRQYE"), 0.0),
-                "rzmre": fnum(r.get("RZMRE"), 0.0),
-                "rzche": fnum(r.get("RZCHE"), 0.0),
-                "rzjme": fnum(r.get("RZJME"), 0.0),
-                "rzrqye_yi": yi(fnum(r.get("RZRQYE"), 0.0)),
-                "rzjme_yi": yi(fnum(r.get("RZJME"), 0.0)),
-            })
-        return out
-
-    def _mock():
-        return [{"date": f"2026-09-{d:02d}", "rzrqye_yi": 18000 + d * 12, "rzjme_yi": (d % 5 - 2) * 30}
-                for d in range(1, 20)]
-
-    providers = [("eastmoney", _em), ("mock", _mock)]
-    return await cache.chain(
-        cache.order_providers("margin", dict(providers)),
-        cache_key="margin:30", ttl=settings.ttl_daily, force=force,
-        validator=lambda r: bool(r),
-    )
-
-
-async def hsgt(force: bool = False) -> cache.Sourced:
-    """沪深港通成交额（北向净买入已于2024-08停发，这里给成交额与占比）"""
-    async def _em():
-        rows = await em.hsgt_history(30)
-        return [{
-            "date": str(r.get("TRADE_DATE", ""))[:10],
-            "deal_amt": fnum(r.get("DEAL_AMT"), 0.0),
-            "net": fnum(r.get("NET_DEAL_AMT")),
-            "index_pct": fnum(r.get("INDEX_CHANGE_RATE")),
-            "lead": r.get("LEAD_STOCKS_NAME"),
-        } for r in rows]
-
-    def _mock():
-        return [{"date": f"2026-09-{d:02d}", "deal_amt": 1500 + d * 20, "net": None, "index_pct": 0.3}
-                for d in range(1, 20)]
-
-    providers = [("eastmoney", _em), ("mock", _mock)]
-    return await cache.chain(
-        cache.order_providers("margin", dict(providers)),
-        cache_key="hsgt:30", ttl=settings.ttl_daily, force=force,
-        validator=lambda r: bool(r),
-    )

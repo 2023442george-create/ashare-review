@@ -224,7 +224,7 @@ async def stock_flow(limit: int = 50, sort: str = "f62", force: bool = False) ->
                  "main_flow_yi": 26.35, "main_flow_ratio": 41.26, "turnover": 12.1, "total_mv_yi": 580}]
 
     return await cache.chain(
-        [("eastmoney", _em), ("mock", _mock)],
+        [("eastmoney", _em), ("tencent", lambda: tx.stock_flow(limit)), ("mock", _mock)],
         cache_key=f"stockflow:{limit}:{sort}", ttl=settings.ttl_sector, force=force,
         validator=lambda r: bool(r),
     )

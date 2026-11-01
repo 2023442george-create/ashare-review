@@ -34,14 +34,21 @@ def _row(it: dict, score: float, why: list[str]) -> dict:
     }
 
 
+async def _hot_industries() -> set[str]:
+    """前 5 条主线包含的涨停细分行业。
+
+    主线名是归并后的申万一级（食品饮料），涨停股的 industry 是东财细分（白酒Ⅱ），
+    必须用 members 匹配，直接比主线名永远对不上。
+    """
+    ml = await sectors.main_line()
+    return {n for m in (ml.get("main_lines") or [])[:5] for n in m.get("members") or [m["name"]]}
+
+
 async def _first_board(date: str | None) -> tuple[list[dict], str]:
     res = await limitup.pool("zt", date)
     items = (res.data or {}).get("items") or []
     historical = not limitup.history_depth_ok(date)
-    hot: set[str] = set()
-    if not historical:
-        ml = await sectors.main_line()
-        hot = {m["name"] for m in (ml.get("main_lines") or [])[:5]}
+    hot = set() if historical else await _hot_industries()
     out = []
     for it in items:
         if (it.get("boards") or 1) != 1:
@@ -86,10 +93,7 @@ async def _relay(date: str | None) -> tuple[list[dict], str]:
     res = await limitup.pool("zt", date)
     items = (res.data or {}).get("items") or []
     historical = not limitup.history_depth_ok(date)
-    hot: set[str] = set()
-    if not historical:
-        ml = await sectors.main_line()
-        hot = {m["name"] for m in (ml.get("main_lines") or [])[:5]}
+    hot = set() if historical else await _hot_industries()
     out = []
     for it in items:
         b = it.get("boards") or 1
@@ -201,7 +205,7 @@ async def _main_line(date: str | None) -> tuple[list[dict], str]:
     items = (res.data or {}).get("items") or []
     out = []
     for line in lines:
-        members = [i for i in items if i.get("industry") == line["name"]]
+        members = [i for i in items if i.get("industry") in (line.get("members") or [line["name"]])]
         members.sort(key=lambda x: (-(x.get("boards") or 0), -(x.get("fund") or 0)))
         for it in members[:4]:
             score = 60 + (it.get("boards") or 1) * 10 + line["score"] / 5

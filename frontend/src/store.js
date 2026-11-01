@@ -31,15 +31,19 @@ export function toast(msg, ms = 2800) {
   setTimeout(() => { if (store.toast === msg) store.toast = '' }, ms)
 }
 
-export function roleOf(key) {
-  const all = [].concat(store.indicators?.indexes || [], store.indicators?.global || [])
-  const hit = all.find(i => i.key === key)
-  return hit ? hit.role : ''
+function findIndicator(name) {
+  const { sentiment = [], macro = [], limitup = [], sectors = [], lhb = [] } = store.indicators || {}
+  return [...sentiment, ...macro, ...limitup, ...sectors, ...lhb].find(i => i.name === name || i.key === name)
 }
 
 export function indicatorHelp(name) {
-  const hit = (store.indicators?.sentiment || []).find(i => i.name === name || i.key === name)
+  const hit = findIndicator(name)
   return hit ? `${hit.name}：${hit.how}` : ''
+}
+
+/** 只要说明文字，用于面板标题下方（面板标题已经写了指标名） */
+export function indicatorHow(name) {
+  return findIndicator(name)?.how || ''
 }
 
 export function setAutoRefresh(on, intervalSec, cb) {

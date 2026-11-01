@@ -10,6 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _bootstrap  # noqa: F401,E402
+from _bootstrap import sources_down  # noqa: E402
 
 from app.core import cache, store  # noqa: E402
 from app.core.config import settings  # noqa: E402
@@ -235,14 +236,9 @@ class GroupBIndicatorTests(unittest.TestCase):
         self.assertEqual(rows, [["2026-10-30", 123.45]])
 
     def test_lift_named_fields(self):
-        rows = em.parse_lift_days([{"FREE_DATE": "2026-11-05 00:00:00", "LIFT_NUM": 6, "ACTUAL_FREE_MARKET_CAP": 1234567}])
+        rows = em.parse_lift_days([{"FREE_DATE": "2026-11-05 00:00:00", "LIFT_ORG_NUM": 6, "LIFT_NUM": 19863.8,
+                                    "MARKET_CAP": 1234567, "PLAN_MARKET_CAP": 9999999}])
         self.assertEqual(rows, [{"date": "2026-11-05", "count": 6, "cap_yi": 123.46}])     # 万元 → 亿元
-
-    def test_lift_positional_fallback(self):
-        """字段名猜错时按东财页面列序取：第 2 列家数、第 4 列实际解禁市值。"""
-        rows = em.parse_lift_days([{"D": "2026-11-06", "N": 3, "S": 999, "CAP": 50000, "f2": 4000}])
-        self.assertEqual(rows[0]["count"], 3)
-        self.assertEqual(rows[0]["cap_yi"], 5.0)
 
 
 class OverviewTests(unittest.TestCase):
@@ -284,7 +280,8 @@ class OverviewTests(unittest.TestCase):
     def test_all_sources_down_reports_gaps_without_mock(self):
         """在线模式下所有源都失败：必须返回缺失 + 缺口说明，绝不能拿样例数据顶上。"""
         settings.offline = False
-        res = asyncio.run(macro.overview(force=True))
+        with sources_down():
+            res = asyncio.run(macro.overview(force=True))
         self.assertIsNone(res["temperature"]["score"])
         self.assertTrue(res["gaps"])
         self.assertNotIn("mock", res["meta"]["sources"].values())

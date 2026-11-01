@@ -19,7 +19,7 @@ from app.core import cache, store, utils  # noqa: E402
 from app.services import track  # noqa: E402
 
 BASE = dt.date(2026, 10, 23)
-DAYS = [d.isoformat() for d in utils.trade_days_back(95, base=BASE)]
+DAYS = [utils.prev_trade_day(BASE, n).isoformat() for n in range(94, 0, -1)] + [BASE.isoformat()]
 CAND_DATES = DAYS[:70]            # 作为候选日的那些交易日（要超过 MIN_DAYS_EVIDENCE）
 N_CODES = 40
 CODES = [f"60{i:04d}" for i in range(N_CODES)]

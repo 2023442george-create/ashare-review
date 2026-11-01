@@ -51,9 +51,9 @@
         </table>
         <div class="divider"></div>
         <div class="kv small">
-          <span class="kk">量能档位</span><span>{{ lv.label }}（{{ lv.tip }}）</span>
+          <span class="kk">量能档位 <span class="help" :title="h('两市成交额')">?</span></span><span>{{ lv.label }}（{{ lv.tip }}）</span>
           <span class="kk">较昨日</span><span>{{ ov.turnover && ov.turnover.delta_yi !== null ? signed(ov.turnover.delta_yi, 0) + ' 亿' : '—' }}　5日均量 {{ ov.turnover && ov.turnover.ma5_yi ? Math.round(ov.turnover.ma5_yi) + ' 亿' : '—' }}</span>
-          <span class="kk">涨跌家数</span>
+          <span class="kk">涨跌家数 <span class="help" :title="h('上涨家数占比')">?</span></span>
           <span><span class="up">涨 {{ m.up ?? '—' }}</span> / <span class="down">跌 {{ m.down ?? '—' }}</span> / 平 {{ m.flat ?? '—' }}　占比 {{ pctv(m.up_ratio) }}</span>
         </div>
       </Panel>
@@ -61,7 +61,7 @@
       <!-- 涨跌分布 -->
       <Panel title="涨跌分布" sub="市场宽度：普涨还是分化">
         <EChart :option="histOpt" :height="230" />
-        <div class="small muted center">涨停 {{ m.limit_up ?? 0 }} 家 · 涨幅&gt;5% {{ gt5 }} 家 · 跌幅&gt;5% {{ lt5 }} 家</div>
+        <div class="small muted center">涨停 {{ m.limit_up ?? 0 }} 家 · 涨幅&gt;5% {{ m.gt5_up ?? '—' }} 家 · 跌幅&gt;5% {{ m.lt5_down ?? '—' }} 家</div>
       </Panel>
     </div>
 
@@ -85,6 +85,7 @@
           </div>
         </Panel>
         <Panel title="连板天梯" :sub="`最高 ${ladder.max_boards || 0} 板`" nopad tight>
+          <template #extra><span class="help" :title="h('连板天梯')">?</span></template>
           <div style="padding:6px 10px">
             <div class="ladder-row" v-for="lv in (ladder.levels || []).slice(0, 5)" :key="lv.boards">
               <div class="ladder-lv">{{ lv.boards }}板</div>
@@ -102,7 +103,7 @@
     </div>
 
     <div class="grid" style="grid-template-columns: 1fr 1fr">
-      <Panel title="今日主线" sub="涨停结构 × 板块涨幅 × 主力资金">
+      <Panel title="今日主线" sub="涨停结构 × 板块涨幅 × 主力资金" :how="how('mainline')">
         <template #extra><router-link to="/sectors" class="small">更多 →</router-link></template>
         <div v-for="l in (ml.main_lines || []).slice(0, 5)" :key="l.name" style="padding:7px 0;border-bottom:1px dashed #232d40">
           <div class="between">
@@ -145,7 +146,7 @@ import StatCard from '../components/StatCard.vue'
 import EChart from '../components/EChart.vue'
 import PctText from '../components/PctText.vue'
 import { api } from '../api'
-import { store, indicatorHelp, loadIndicators, srcTag } from '../store'
+import { indicatorHelp, indicatorHow as how, loadIndicators, srcTag } from '../store'
 import { num, pct as pctf, signed, shortTime, scoreColor, phaseColor } from '../format'
 
 const ov = ref({})
@@ -166,8 +167,6 @@ const pctv = v => (v === null || v === undefined ? '—' : Number(v).toFixed(2) 
 const h = n => indicatorHelp(n)
 const phaseFg = computed(() => phaseColor((senti.value.phase || {}).phase))
 const phaseBg = computed(() => phaseFg.value + '22')
-const gt5 = computed(() => m.value.gt5_up ?? ((m.value.histogram || []).filter(x => x.type === 'up' && x.key >= 5).reduce((a, b) => a + b.value, 0)))
-const lt5 = computed(() => m.value.lt5_down ?? 0)
 
 const gaugeOpt = computed(() => ({
   grid: null, tooltip: null,

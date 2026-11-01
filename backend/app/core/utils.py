@@ -11,7 +11,7 @@ CN_TZ = dt.timezone(dt.timedelta(hours=8))
 CN_HOLIDAYS: set[str] = {
     # 2026
     "2026-01-01", "2026-01-02", "2026-02-16", "2026-02-17", "2026-02-18",
-    "2026-02-19", "2026-02-20", "2026-04-06", "2026-05-01", "2026-05-04",
+    "2026-02-19", "2026-02-20", "2026-02-23", "2026-04-06", "2026-05-01", "2026-05-04",
     "2026-05-05", "2026-06-19", "2026-09-25", "2026-10-01", "2026-10-02",
     "2026-10-05", "2026-10-06", "2026-10-07",
 }
@@ -37,10 +37,6 @@ def holiday_coverage(today: dt.date | None = None) -> dict[str, Any]:
 
 def now_cn() -> dt.datetime:
     return dt.datetime.now(CN_TZ)
-
-
-def today_str(fmt: str = "%Y-%m-%d") -> str:
-    return now_cn().strftime(fmt)
 
 
 def is_trade_day(d: dt.date) -> bool:
@@ -94,19 +90,6 @@ def next_trade_day(d: dt.date, n: int = 1) -> dt.date:
             if n == 0:
                 return d
     return d
-
-
-def trade_days_back(n: int, base: dt.date | None = None) -> list[dt.date]:
-    """返回最近 n 个交易日（含 base，倒序 -> 正序）。"""
-    out: list[dt.date] = []
-    d = base or last_trade_day()
-    while len(out) < n:
-        if is_trade_day(d):
-            out.append(d)
-        d -= dt.timedelta(days=1)
-        if (base or now_cn().date()) - d > dt.timedelta(days=n * 3 + 30):
-            break
-    return list(reversed(out))
 
 
 def yyyymmdd(d: dt.date | str | None = None) -> str:
@@ -166,29 +149,9 @@ def fnum(v: Any, default: float | None = None, scale: float = 1.0) -> float | No
         return default
 
 
-def ratio(part: float | None, total: float | None, digits: int = 2) -> float | None:
-    if not part or not total:
-        return None
-    return round(part / total * 100, digits)
-
-
 def yi(v: float | None, digits: int = 2) -> float | None:
     """元 -> 亿元"""
     return None if v is None else round(v / 1e8, digits)
-
-
-def wan(v: float | None, digits: int = 2) -> float | None:
-    return None if v is None else round(v / 1e4, digits)
-
-
-def pct(v: float | None, digits: int = 2) -> float | None:
-    return None if v is None else round(v, digits)
-
-
-def safe_div(a: float | None, b: float | None, digits: int = 4) -> float | None:
-    if a is None or not b:
-        return None
-    return round(a / b, digits)
 
 
 def decode_bytes(b: bytes, prefers: Iterable[str] = ("utf-8", "gbk", "gb18030")) -> str:
@@ -241,8 +204,3 @@ def code_to_symbol(code: str) -> str:
     if c.startswith(("00", "30")):
         return "sz" + c
     return "sh" + c
-
-
-def chunked(seq: list, size: int) -> Iterable[list]:
-    for i in range(0, len(seq), size):
-        yield seq[i:i + size]

@@ -53,17 +53,20 @@ class OnlineFailureTests(_Mode):
         """所有源失败时按 0 家涨停算出的分数不能落库，否则会覆盖当天真实记录。"""
         settings.offline = False
         before = len(store.load_sentiment_history(500))
-        res = asyncio.run(sentiment.core(force=True))
+        with _bootstrap.sources_down():
+            res = asyncio.run(sentiment.core(force=True))
         self.assertFalse(res["data_quality"]["saved"])
         self.assertEqual(len(store.load_sentiment_history(500)), before)
 
     def test_news_does_not_fall_back_to_samples(self):
         settings.offline = False
-        self.assertEqual(asyncio.run(news.feed(20, force=True))["items"], [])
+        with _bootstrap.sources_down():
+            self.assertEqual(asyncio.run(news.feed(20, force=True))["items"], [])
 
     def test_global_does_not_fill_sample_prices(self):
         settings.offline = False
-        items = asyncio.run(globalmarket.overview(force=True)).get("items") or []
+        with _bootstrap.sources_down():
+            items = asyncio.run(globalmarket.overview(force=True)).get("items") or []
         self.assertFalse([i for i in items if i.get("source") == "mock"])
 
     def test_good_snapshot_not_overwritten_by_blocked_one(self):

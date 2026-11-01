@@ -4,9 +4,10 @@
       <StatCard label="上榜个股" :value="data.count ?? 0" :desc="`数据日期 ${data.date || '—'}`" />
       <StatCard label="知名资金净买入 TOP" :value="top1 ? top1.name : '—'" color="#ffb020"
                 :desc="top1 ? `${top1.game_tag} · 净买 ${top1.known_net_yi}亿` : ''" />
-      <StatCard label="机构专用净买入" :value="instNet + ' 亿'" :sign="true" desc="机构专用席位合计净额" />
-      <StatCard label="股通席位净买入" :value="northNet + ' 亿'" :sign="true"
-                desc="仅统计龙虎榜“股通专用”席位，不等同全市场北向净买入" />
+      <StatCard label="机构专用净买入" :value="(data.inst_net_yi ?? '—') + ' 亿'" :sign="true"
+                desc="机构专用席位合计净额" :help="h('inst_net')" />
+      <StatCard label="股通席位净买入" :value="(data.north_net_yi ?? '—') + ' 亿'" :sign="true"
+                desc="仅上榜个股，不等同全市场北向" :help="h('north_net')" />
     </div>
 
     <div class="grid" style="grid-template-columns:1.6fr 1fr">
@@ -22,7 +23,8 @@
         <div class="scroll-y" style="max-height:600px">
           <table class="tbl">
             <thead><tr><th>代码</th><th>名称</th><th class="num">收盘</th><th class="num">涨幅</th>
-              <th class="num">成交额</th><th class="num">买入</th><th class="num">卖出</th><th class="num">净额</th>
+              <th class="num">成交额</th><th class="num">买入</th><th class="num">卖出</th>
+              <th class="num">净额 <span class="help" :title="h('lhb_net')">?</span></th>
               <th>资金属性</th><th>上榜原因</th></tr></thead>
             <tbody>
               <template v-for="r in filtered" :key="r.code + r.reason">
@@ -43,7 +45,7 @@
                     <div class="small muted" style="margin-bottom:6px">买卖席位（点击行收起）· 次日涨幅 {{ r.d1_pct ?? '—' }}%</div>
                     <table class="tbl">
                       <thead><tr><th>营业部</th><th>识别</th><th class="num">买入</th><th class="num">卖出</th><th class="num">净额</th>
-                        <th class="num">3日胜率%</th><th class="num">3日上榜次数</th><th>操作风格 / 次日提示</th></tr></thead>
+                        <th class="num">3日胜率% <span class="help" :title="h('win_3day')">?</span></th><th class="num">3日上榜次数</th><th>操作风格 / 次日提示</th></tr></thead>
                       <tbody>
                         <tr v-for="(s, i) in (r.seats || []).slice(0, 10)" :key="i">
                           <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis" :title="s.dept">{{ s.dept }}</td>
@@ -69,11 +71,11 @@
       </Panel>
 
       <div class="stack">
-        <Panel title="活跃营业部排行" sub="谁在扫货、谁在出货">
-          <div v-for="(s, i) in (data.seat_rank || []).slice(0, 16)" :key="s.dept" class="between small"
+        <Panel title="活跃营业部排行" sub="净买入最多 8 家 / 净卖出最多 8 家">
+          <div v-for="s in seatRows" :key="s.dept" class="between small"
                style="padding:6px 0;border-bottom:1px dashed #232d40">
             <span style="max-width:210px;overflow:hidden;text-overflow:ellipsis" :title="s.dept">
-              <span class="dim">{{ i + 1 }}.</span> {{ s.seat || s.dept }}
+              {{ s.seat || s.dept }}
               <span class="tag gray tiny" v-if="s.tag">{{ s.tag }}</span>
             </span>
             <span class="nowrap"><span class="dim tiny">{{ s.times }}次</span>
@@ -100,7 +102,7 @@ import Panel from '../components/Panel.vue'
 import StatCard from '../components/StatCard.vue'
 import PctText from '../components/PctText.vue'
 import { api } from '../api'
-import { srcTag } from '../store'
+import { indicatorHelp as h, srcTag } from '../store'
 import { cls, money, num, signed } from '../format'
 
 const data = ref({}); const date = ref(''); const onlyKnown = ref(false); const expanded = ref('')
@@ -111,14 +113,10 @@ const filtered = computed(() => {
   return rows
 })
 const top1 = computed(() => (data.value.items || []).slice().sort((a, b) => (b.known_net_yi || 0) - (a.known_net_yi || 0))[0])
-function sumSeat(kw) {
-  let s = 0
-  ;(data.value.seat_rank || []).forEach(x => { if ((x.dept || '').includes(kw)) s += x.net_yi || 0 })
-  return +s.toFixed(2)
-}
-const instNet = computed(() => sumSeat('机构专用'))
-// 这是龙虎榜上榜个股的“股通专用”席位合计，不是交易所披露的全市场北向净买入。
-const northNet = computed(() => sumSeat('股通专用'))
+const seatRows = computed(() => {
+  const r = data.value.seat_rank || []
+  return r.length <= 16 ? r : [...r.slice(0, 8), ...r.slice(-8)]
+})
 function toggle(c) { expanded.value = expanded.value === c ? '' : c }
 function tagClass(t) {
   if (!t) return 'gray'

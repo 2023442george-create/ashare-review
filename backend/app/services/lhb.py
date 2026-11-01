@@ -35,6 +35,7 @@ def _norm_stock(r: dict) -> dict:
         "d5_pct": fnum(r.get("D5_CLOSE_ADJCHRATE")),
         "deal_ratio": fnum(r.get("DEAL_AMOUNT_RATIO")),
         "net_ratio": fnum(r.get("DEAL_NET_RATIO")),
+        "trade_id": str(r.get("TRADE_ID") or ""),
     }
 
 
@@ -44,6 +45,7 @@ def _norm_seat(r: dict, side: str) -> dict:
     return {
         "code": str(r.get("SECURITY_CODE") or ""),
         "symbol": code_to_symbol(str(r.get("SECURITY_CODE") or "")),
+        "trade_id": str(r.get("TRADE_ID") or ""),
         "dept": dept,
         "side": side,
         "buy": fnum(r.get("BUY"), 0.0),
@@ -53,7 +55,7 @@ def _norm_seat(r: dict, side: str) -> dict:
         "win_3day": fnum(r.get("RISE_PROBABILITY_3DAY")),
         "times_3day": int(fnum(r.get("TOTAL_BUYER_SALESTIMES_3DAY"), 0) or 0),
         "seat": hit["seat"] if hit else "",
-        "tag": hit["tag"] if hit else ("游资未知" if not dept.endswith("营业部") and "专用" not in dept else ""),
+        "tag": hit["tag"] if hit else "",
         "style": hit["style"] if hit else "",
         "next_hint": hit["next"] if hit else "",
         "noise": game_seats.is_noise(dept),
@@ -65,23 +67,13 @@ async def _daily_em(date: str) -> dict | None:
     if not rows:
         return None
     buys, sells = await _seats_em(date)
-    seats = buys + sells
+    base = _pick_base_rows([_norm_stock(r) for r in rows])
+    seats = dedupe_seats(buys + sells, {st["trade_id"] for st in base})
     by_code: dict[str, list[dict]] = {}
     for s in seats:
         by_code.setdefault(s["code"], []).append(s)
     items = []
-    seen: dict[str, dict] = {}
-    for r in rows:
-        st = _norm_stock(r)
-        if st["code"] in seen:
-            old = seen[st["code"]]
-            if st["reason"] and st["reason"] not in old["reason"]:
-                old["reason"] = (old["reason"] + " / " + st["reason"]).strip(" /")
-            old["buy"] = (old.get("buy") or 0) + (st.get("buy") or 0)
-            old["sell"] = (old.get("sell") or 0) + (st.get("sell") or 0)
-            old["net"] = (old.get("net") or 0) + (st.get("net") or 0)
-            old["buy_yi"] = yi(old["buy"]); old["sell_yi"] = yi(old["sell"]); old["net_yi"] = yi(old["net"])
-            continue
+    for st in base:
         cs = sorted(by_code.get(st["code"], []), key=lambda x: -abs(x.get("net") or 0))
         st["seats"] = cs[:10]
         known = [x for x in cs if x.get("seat")]
@@ -90,10 +82,47 @@ async def _daily_em(date: str) -> dict | None:
         st["known_net_yi"] = round(sum(x.get("net") or 0 for x in known) / 1e8, 2)
         st["game_tag"] = _game_tag(known)
         items.append(st)
-        seen[st["code"]] = st
     items.sort(key=lambda x: -(x.get("net") or 0))
-    return {"date": date, "count": len(items), "items": items,
-            "seat_rank": seat_rank_from(seats), "raw_seat_count": len(seats)}
+    return {"date": date, "count": len(items), "items": items, "seat_rank": seat_rank_from(seats),
+            "raw_seat_count": len(seats), "inst_net_yi": _dept_net_yi(seats, "机构专用", "机构投资者"),
+            "north_net_yi": _dept_net_yi(seats, "股通专用")}
+
+
+def _pick_base_rows(stocks: list[dict]) -> list[dict]:
+    """同一只票因多个原因上榜时只保留一行，优先单日榜。
+
+    "日涨幅偏离"是当日数据，"连续三日累计"覆盖三天且包含当日，两行相加会把当日算两遍。
+    成交额最小的那行统计区间最短；其余原因只并入 reason。
+    """
+    by_code: dict[str, list[dict]] = {}
+    for st in stocks:
+        by_code.setdefault(st["code"], []).append(st)
+    out = []
+    for group in by_code.values():
+        group.sort(key=lambda s: s.get("amount") or 0)
+        keep = group[0]
+        keep["reason"] = " / ".join(dict.fromkeys(s["reason"] for s in group if s["reason"]))
+        out.append(keep)
+    return out
+
+
+def dedupe_seats(seats: list[dict], trade_ids: set[str]) -> list[dict]:
+    """只保留选中榜单的席位，并去掉买卖榜里的重复行。
+
+    同时进入买入前五和卖出前五的席位会在两张表里各出现一次，买卖金额完全相同，
+    不去重净额就翻倍。多个"机构专用"是不同席位，金额不同，不会被去掉。
+    """
+    out, seen = [], set()
+    for s in seats:
+        key = (s["trade_id"], s["dept"], s["buy"], s["sell"])
+        if s["trade_id"] in trade_ids and key not in seen:
+            seen.add(key)
+            out.append(s)
+    return out
+
+
+def _dept_net_yi(seats: list[dict], *keywords: str) -> float:
+    return round(sum(s.get("net") or 0 for s in seats if any(k in (s.get("dept") or "") for k in keywords)) / 1e8, 2)
 
 
 async def _seats_em(date: str) -> tuple[list[dict], list[dict]]:
@@ -142,7 +171,8 @@ def seat_rank_from(seats: list[dict]) -> list[dict]:
         a["net_yi"] = round(a["net"] / 1e8, 2)
         a.pop("buy", None); a.pop("sell", None); a.pop("net", None)
     out.sort(key=lambda x: -(x["net_yi"]))
-    return out[:40]
+    # 前 20 扫货、后 20 出货；只截头部会让净卖出的席位消失
+    return out if len(out) <= 40 else out[:20] + out[-20:]
 
 
 async def _daily_ak(date: str) -> dict | None:
@@ -191,12 +221,3 @@ async def daily(date: str | None = None, force: bool = False) -> cache.Sourced:
         providers, cache_key=f"lhb:{d}", ttl=settings.ttl_lhb, force=force,
         validator=lambda r: isinstance(r, dict) and r.get("items"),
     )
-
-
-async def focus_stocks(date: str | None = None) -> list[dict]:
-    """龙虎榜里最值得关注的票：知名游资净买入 + 主线板块。"""
-    res = await daily(date)
-    items = (res.data or {}).get("items") or []
-    out = [i for i in items if (i.get("known_net_yi") or 0) > 0.3 and i.get("game_tag")]
-    out.sort(key=lambda x: -x["known_net_yi"])
-    return out[:20]

@@ -70,9 +70,12 @@ async def quote(codes: list[str]) -> list[dict]:
 
 
 async def kline(symbol: str, period: str = "day", count: int = 120, fq: str = "qfq") -> list[list]:
-    """返回 [[date, open, close, high, low, volume], ...]；symbol 支持 sh/sz/bj/hk 前缀。"""
+    """返回 [[date, open, close, high, low, volume, amount(元)], ...]；symbol 支持 sh/sz/bj/hk 前缀。
+
+    newfqkline 比 fqkline 多带成交额（第 9 列，万元），不需要再按成交量推算。
+    """
     sym = symbol if re.match(r"^(sh|sz|bj|hk)", str(symbol)) else code_to_symbol(symbol)
-    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={sym},{period},,,{count},{fq}"
+    url = f"https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get?param={sym},{period},,,{count},{fq}"
     data = await http.fetch_json(url, source="tencent")
     if not data:
         return []
@@ -81,23 +84,33 @@ async def kline(symbol: str, period: str = "day", count: int = 120, fq: str = "q
     out = []
     for r in rows:
         if isinstance(r, list) and len(r) >= 6:
-            out.append([r[0]] + [fnum(x, 0.0) for x in r[1:6]])
+            amount_wan = fnum(r[8]) if len(r) > 8 else None
+            out.append([r[0]] + [fnum(x, 0.0) for x in r[1:6]] + [amount_wan * 1e4 if amount_wan else None])
     return out
 
 
-async def minute(symbol: str) -> list[list]:
-    """当日分时（用于分时图/尾盘异动）"""
-    sym = symbol if re.match(r"^(sh|sz|bj)", str(symbol)) else code_to_symbol(symbol)
-    url = f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={sym}"
-    data = await http.fetch_json(url, source="tencent")
-    node = ((data or {}).get("data") or {}).get(sym) or {}
-    rows = node.get("data") or {}
+async def stock_flow(limit: int = 50) -> list[dict] | None:
+    """全 A 个股主力净流入榜（zljlr、turnover 单位都是万元）。东财不可用时的备用源。"""
+    data = await http.fetch_json(
+        "https://proxy.finance.qq.com/cgi/cgi-bin/rank/hs/getBoardRankList", source="tencent",
+        params={"_appver": "11.17.0", "board_code": "aStock", "sort_type": "netMainIn",
+                "direct": "down", "offset": 0, "count": limit},
+    )
+    rows = ((data or {}).get("data") or {}).get("rank_list") or []
     out = []
-    for line in rows.get("data") or []:
-        parts = str(line).split(" ")
-        if len(parts) >= 2:
-            out.append([parts[0], fnum(parts[1], 0.0), fnum(parts[2], 0.0)])
-    return out
+    for r in rows:
+        flow_wan, amount_wan = fnum(r.get("zljlr")), fnum(r.get("turnover"))
+        out.append({
+            "code": str(r.get("code") or "")[2:], "name": r.get("name"), "price": fnum(r.get("zxj")),
+            "pct": fnum(r.get("zdf")),
+            "main_flow": flow_wan * 1e4 if flow_wan is not None else None,
+            "main_flow_yi": round(flow_wan / 1e4, 2) if flow_wan is not None else None,
+            "main_flow_ratio": round(flow_wan / amount_wan * 100, 2) if flow_wan is not None and amount_wan else None,
+            "super_flow_yi": None, "big_flow_yi": None,   # 腾讯不拆超大单/大单
+            "turnover": fnum(r.get("hsl")), "total_mv_yi": fnum(r.get("zsz")),
+        })
+    return out or None
+
 
 # ---------------- 板块排行（行业 / 概念） ----------------
 # proxy.finance.qq.com 在国内直连可用，且带主力净流入，是东财 push2 不可用时

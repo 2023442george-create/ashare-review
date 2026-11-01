@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
@@ -21,3 +22,21 @@ TEST_DATA_DIR = tempfile.mkdtemp(prefix="ashare-review-test-")
 os.environ["REVIEW_DATA_DIR"] = TEST_DATA_DIR
 os.environ["REVIEW_SCHEDULER"] = "0"
 os.environ["REVIEW_WARMUP"] = "0"
+
+
+def sources_down():
+    """模拟所有数据源都不可达。测试不能靠"碰巧没有网络"，有网时真实数据会让它们失败。"""
+    async def _none(*_a, **_k):
+        return None
+    from app.core.config import settings
+    patches = [mock.patch("app.core.http.fetch", _none), mock.patch.object(settings, "allow_akshare", False)]
+
+    class _Down:
+        def __enter__(self):
+            for p in patches:
+                p.start()
+
+        def __exit__(self, *_exc):
+            for p in patches:
+                p.stop()
+    return _Down()

@@ -1,6 +1,6 @@
 <template>
   <div class="stack">
-    <Panel title="连板天梯" :sub="ladder.comment" :loading="!ladder.levels">
+    <Panel title="连板天梯" :sub="ladder.comment" :how="how('ladder')" :loading="!ladder.levels">
       <template #extra><span class="tag gold">最高 {{ ladder.max_boards || 0 }} 板</span>
         <span class="tag gray" v-if="(ladder.gaps || []).length">断层：{{ ladder.gaps.join(',') }} 板</span>
         <span class="tag green" v-else>梯队完整</span></template>
@@ -37,15 +37,16 @@
             <th @click="sortBy('code')">代码</th><th @click="sortBy('name')">名称</th>
             <th class="num" @click="sortBy('pct')">涨幅%</th>
             <th class="num" @click="sortBy('boards')">连板</th>
-            <th>板型</th><th @click="sortBy('first_time')">首封</th><th @click="sortBy('last_time')">末封</th>
-            <th class="num" @click="sortBy('fund')">封单额</th>
-            <th class="num" @click="sortBy('seal_ratio')">封成比%</th>
-            <th class="num" @click="sortBy('fund_mv_ratio')">封单/流通%</th>
+            <th>板型 <span class="help" :title="h('board_type')">?</span></th>
+            <th @click="sortBy('first_time')">首封 <span class="help" :title="h('first_time')">?</span></th><th @click="sortBy('last_time')">末封</th>
+            <th class="num" @click="sortBy('fund')">封单额 <span class="help" :title="h('fund')">?</span></th>
+            <th class="num" @click="sortBy('seal_ratio')">封成比% <span class="help" :title="h('seal_ratio')">?</span></th>
+            <th class="num" @click="sortBy('fund_mv_ratio')">封单/流通% <span class="help" :title="h('fund_mv_ratio')">?</span></th>
             <th class="num" @click="sortBy('amount')">成交额</th>
             <th class="num" @click="sortBy('float_mv')">流通市值</th>
             <th class="num" @click="sortBy('turnover')">换手%</th>
             <th class="num" @click="sortBy('broken_times')">炸板</th>
-            <th @click="sortBy('industry')">行业</th><th>统计</th>
+            <th @click="sortBy('industry')">行业</th><th>统计 <span class="help" :title="h('days_board')">?</span></th>
           </tr></thead>
           <tbody>
             <tr v-for="r in filtered" :key="r.code">
@@ -89,7 +90,7 @@ import Panel from '../components/Panel.vue'
 import EChart from '../components/EChart.vue'
 import PctText from '../components/PctText.vue'
 import { api } from '../api'
-import { srcTag } from '../store'
+import { indicatorHelp as h, indicatorHow as how, srcTag } from '../store'
 import { money, num } from '../format'
 
 const kinds = [{ k: 'zt', n: '涨停池' }, { k: 'zb', n: '炸板池' }, { k: 'dt', n: '跌停池' }]

@@ -1,1 +1,0 @@
-{"compilerOptions":{"target":"ESNext","module":"ESNext","moduleResolution":"Bundler","allowJs":true,"noEmit":true},"include":["src/**/*","vite.config.js"]}

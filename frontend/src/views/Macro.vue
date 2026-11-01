@@ -10,15 +10,16 @@
     <!-- 第一行：最关键的 6 个数 -->
     <div class="grid" style="grid-template-columns:repeat(6,1fr)">
       <StatCard label="宏观温度" :value="t.score ?? '—'" :color="t.score == null ? '' : scoreColor(t.score)"
-                :bar="t.score ?? null" :desc="tempDesc" :help="t.tip" />
+                :bar="t.score ?? null" :desc="tempDesc" :help="h('temperature')" />
       <StatCard label="沪深300 PE" :value="num(v300.pe, 2)" :desc="pctDesc(v300.pe_pct, '近10年分位')"
-                :help="'中证官方滚动市盈率，来源：' + (v300.pe_source || '—')" />
+                :help="h('csi300') + '（来源：' + (v300.pe_source || '—') + '）'" />
       <StatCard label="中证全指 PE" :value="num(vall.pe, 2)" :desc="pctDesc(vall.pe_pct, '近10年分位')"
-                :help="'代表全A整体估值，来源：' + (vall.pe_source || '—')" />
-      <StatCard label="股债性价比 ERP" :value="pv(erp.erp)" :desc="pctDesc(erp.erp_pct, '近10年分位')" :help="erp.how" />
-      <StatCard label="10年期国债" :value="pv(rates.cn10y, 3)" :desc="bpDesc" :help="rates.how" />
+                :help="h('csiall') + '（来源：' + (vall.pe_source || '—') + '）'" />
+      <StatCard label="股债性价比 ERP" :value="pv(erp.erp)" :desc="pctDesc(erp.erp_pct, '近10年分位')" :help="h('erp')" />
+      <StatCard label="10年期国债" :value="pv(rates.cn10y, 3)" :desc="bpDesc" :help="h('cn10y')" />
       <StatCard label="两融余额" :value="margin.balance_yi == null ? '—' : num(margin.balance_yi, 0) + ' 亿'"
-                :desc="pctDesc(margin.pct, '近2年分位')" :help="margin.note" />
+                :desc="`占流通市值 ${pv(margin.float_ratio)}（分位 ${margin.float_ratio_pct ?? '—'}%）· ${(margin.date || '—').slice(5)}`"
+                :help="h('margin')" />
     </div>
 
     <div class="grid" style="grid-template-columns:1.3fr 1fr">
@@ -46,7 +47,7 @@
               </td>
             </tr>
             <tr v-for="c in comps.filter(x => x.group === g.key)" :key="c.key">
-              <td>{{ c.name }}</td>
+              <td>{{ c.name }} <span v-if="c.how" class="help" :title="c.how">?</span></td>
               <td class="num mono">{{ c.value == null ? '—' : num(c.value, c.unit === '亿' ? 0 : 2) + ' ' + c.unit }}</td>
               <td class="num mono">{{ c.pct == null ? '—' : c.pct + '%' }}</td>
               <td>
@@ -72,52 +73,55 @@
     </div>
 
     <div class="grid" style="grid-template-columns:1fr 1fr">
-      <Panel title="股债性价比 ERP" :sub="erpSub" :loading="loading" :empty="!(erp.series || []).length">
+      <Panel title="股债性价比 ERP" :sub="erpSub" :how="erp.how" :loading="loading" :empty="!(erp.series || []).length">
         <EChart :option="erpOpt" :height="260" />
-        <div class="small muted">{{ erp.how }}</div>
       </Panel>
-      <Panel title="估值（滚动 PE）" sub="近10年，中证官方口径" :loading="loading" :empty="!(v300.pe_series || []).length">
+      <Panel title="估值（滚动 PE）" sub="近10年，中证官方口径" :how="how('pe')" :loading="loading" :empty="!(v300.pe_series || []).length">
         <EChart :option="peOpt" :height="230" />
         <div class="row-wrap small" style="gap:6px;margin-top:6px">
           <span class="chip" v-for="v in val" :key="v.key">
-            {{ v.name }}：PB {{ num(v.pb, 2) }}（{{ v.pb_pct == null ? '分位—' : '分位 ' + v.pb_pct + '%' }}）·
+            {{ v.name }}<template v-if="v.pb_proxy">（取{{ v.pb_proxy }}）</template>：PB {{ num(v.pb, 2) }}（{{ v.pb_pct == null ? '分位—' : '分位 ' + v.pb_pct + '%' }}）·
             股息率 {{ pv(v.dividend_yield) }}
           </span>
         </div>
+        <div class="small dim" style="margin-top:4px">PB = 市值 / 净资产，亏损时 PE 失真可以看它；股息率 = 分红 / 市值，高于国债越多越有吸引力</div>
       </Panel>
     </div>
 
     <div class="grid" style="grid-template-columns:1fr 1fr">
-      <Panel title="利率" :sub="`中美10年利差 ${pv(rates.spread)}；美国10年 ${pv(rates.us10y)}`" :loading="loading"
+      <Panel title="利率" :sub="`中美10年利差 ${pv(rates.spread)}；美国10年 ${pv(rates.us10y)}`" :how="rates.how" :loading="loading"
              :empty="!(rates.series || []).length">
         <EChart :option="rateOpt" :height="230" />
         <div class="row-wrap small" style="gap:6px;margin-top:6px">
           <span class="chip">中国2年 {{ pv(rates.cn2y, 3) }}</span>
           <span class="chip">中国30年 {{ pv(rates.cn30y, 3) }}</span>
-          <span class="chip" :title="rates.term_how">
+          <span class="chip">
             期限利差 10Y−2Y <b>{{ pv(rates.term_spread, 3) }}</b>（近10年分位 {{ rates.term_pct ?? '—' }}%，20日
             {{ rates.term_chg20_bp == null ? '—' : signed(rates.term_chg20_bp, 1) + 'bp' }}）
+            <span class="help" :title="rates.term_how">?</span>
           </span>
-          <span class="chip" :title="div.how">
+          <span class="chip">
             红利股息率差：{{ div.name }} {{ pv(div.dividend_yield) }} − 10年国债 = <b>{{ pv(div.spread) }}</b>
+            <span class="help" :title="div.how">?</span>
           </span>
         </div>
       </Panel>
-      <Panel title="资金水位" :sub="flowSub" :loading="loading"
+      <Panel title="资金水位" :sub="flowSub" :how="how('flows')" :loading="loading"
              :empty="!(turnover.series || []).length && !(margin.series || []).length">
         <EChart :option="flowOpt" :height="230" />
         <div class="small muted" style="margin-top:6px">
           最新成交额 {{ turnover.latest_yi == null ? '—' : num(turnover.latest_yi, 0) + ' 亿' }}，
           20日均值 {{ turnover.ma20_yi == null ? '—' : num(turnover.ma20_yi, 0) + ' 亿' }}（分位 {{ turnover.pct ?? '—' }}%）；
-          两融20日变化 <span :class="cls(margin.chg20_yi)">{{ signed(margin.chg20_yi, 0) }} 亿</span>；
-          <span :title="mbuy.how">融资买入占成交额 <b>{{ pv(mbuy.ratio) }}</b>（5日均 {{ pv(mbuy.ma5) }}，分位 {{ mbuy.pct ?? '—' }}%）</span>
+          两融余额分位 {{ margin.pct ?? '—' }}%，20日变化 <span :class="cls(margin.chg20_yi)">{{ signed(margin.chg20_yi, 0) }} 亿</span>（{{ margin.date || '—' }}）；
+          融资买入占成交额 <b>{{ pv(mbuy.ratio) }}</b>（5日均 {{ pv(mbuy.ma5) }}，分位 {{ mbuy.pct ?? '—' }}%）
+          <span class="help" :title="mbuy.how">?</span>
           <span v-if="turnover.estimated" class="tag gold tiny">成交额为按量推算</span>
         </div>
       </Panel>
     </div>
 
     <!-- 宽基 ETF 份额：国家队托底最直接的公开痕迹 -->
-    <Panel title="宽基 ETF 份额" :sub="etfSub" :loading="loading" :empty="!(etf.items || []).length"
+    <Panel title="宽基 ETF 份额" :sub="etfSub" :how="how('etf')" :loading="loading" :empty="!(etf.items || []).length"
            :empty-text="etf.error || '暂无 ETF 份额数据'">
       <table class="tbl">
         <thead><tr><th>跟踪指数</th><th class="num">合计份额(亿份)</th><th class="num">较前1日</th>
@@ -152,7 +156,7 @@
     </Panel>
 
     <!-- 股指期货前 20 会员多空持仓：大机构在期货端怎么站队 -->
-    <Panel title="股指期货会员持仓" :sub="futSub" :loading="loading" :empty="!futVars.some(v => v.date)"
+    <Panel title="股指期货会员持仓" :sub="futSub" :how="how('futures')" :loading="loading" :empty="!futVars.some(v => v.date)"
            :empty-text="fut.error || '暂无持仓排名数据'">
       <div class="grid" style="grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
         <div class="stat" v-for="v in futVars" :key="v.code" :class="{ hl: futSel === v.code }"
@@ -201,7 +205,7 @@
       </div>
       <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:10px">
         <div>
-          <div class="small muted" style="margin-bottom:4px">主力合约年化基差（负数 = 贴水）</div>
+          <div class="small muted" style="margin-bottom:4px">主力合约年化基差（负数 = 贴水）<span class="help" :title="h('basis')">?</span></div>
           <EChart :option="basisOpt" :height="200" />
         </div>
         <div class="small muted" style="line-height:1.8">
@@ -215,7 +219,7 @@
 
     <!-- 风格比值：资金在追小盘还是抱大盘、偏防守还是偏进攻 -->
     <div class="grid" style="grid-template-columns:1fr 1fr">
-      <Panel title="风格比值" sub="窗口起点 = 100，近约2年" :loading="loading" :empty="!styles.some(x => x.value != null)">
+      <Panel title="风格比值" sub="窗口起点 = 100，近约2年" :how="how('style')" :loading="loading" :empty="!styles.some(x => x.value != null)">
         <EChart :option="styleOpt" :height="230" />
         <div class="stack" style="gap:4px;margin-top:6px">
           <div class="small" v-for="x in styles" :key="x.key">
@@ -226,20 +230,20 @@
         </div>
       </Panel>
       <!-- AH 溢价：A 股相对 H 股贵多少 -->
-      <Panel title="AH 溢价指数" :sub="`恒生沪深港通AH股溢价指数，近约2年；来源 ${ah.source || '—'}`" :loading="loading"
+      <Panel title="AH 溢价指数" :sub="`恒生沪深港通AH股溢价指数；${ah.date || '—'}，来源 ${ah.source || '—'}`" :how="ah.how" :loading="loading"
              :empty="ah.value == null">
         <div class="row" style="gap:14px;margin-bottom:4px">
           <span class="mono" style="font-size:22px" :style="{ color: ah.pct == null ? '#e8eef7' : scoreColor(ah.pct) }">{{ num(ah.value, 2) }}</span>
-          <span class="small muted">分位 {{ ah.pct ?? '—' }}% · 20日 <span :class="cls(ah.chg20)">{{ signed(ah.chg20, 2) }}</span></span>
+          <span class="small muted" v-if="(ah.series || []).length">近约2年分位 {{ ah.pct ?? '—' }}% · 20日 <span :class="cls(ah.chg20)">{{ signed(ah.chg20, 2) }}</span></span>
+          <span class="small muted" v-else>较前日 <span :class="cls(ah.chg1)">{{ signed(ah.chg1, 2) }}</span> · 历史 K 线暂不可用，没有分位和走势</span>
         </div>
-        <EChart :option="ahOpt" :height="200" />
-        <div class="small muted">{{ ah.how }}</div>
+        <EChart v-if="(ah.series || []).length" :option="ahOpt" :height="200" />
       </Panel>
     </div>
 
     <div class="grid" style="grid-template-columns:1fr 1fr">
       <!-- 南向资金：内地资金往港股跑的力度 -->
-      <Panel title="南向资金" :sub="`港股通（沪+深）每日净买入，亿元；来源 ${south.source || '—'}`" :loading="loading"
+      <Panel title="南向资金" :sub="`港股通（沪+深）每日净买入，亿元；来源 ${south.source || '—'}`" :how="south.how" :loading="loading"
              :empty="south.latest == null">
         <div class="row-wrap small" style="gap:6px;margin-bottom:6px">
           <span class="chip">{{ south.date }} 净买入 <b :class="cls(south.latest)">{{ signed(south.latest, 2) }}</b></span>
@@ -248,10 +252,9 @@
           <span class="chip">近60日 <b :class="cls(south.sum60)">{{ signed(south.sum60, 1) }}</b></span>
         </div>
         <EChart :option="southOpt" :height="200" />
-        <div class="small muted">{{ south.how }}</div>
       </Panel>
       <!-- 限售解禁：未来供给压力 -->
-      <Panel title="限售股解禁" :sub="`实际解禁市值（亿元），按当前股价估算；来源 ${lift.source || '—'}`" :loading="loading"
+      <Panel title="限售股解禁" :sub="`实际解禁市值（亿元），按当前股价估算；来源 ${lift.source || '—'}`" :how="lift.how" :loading="loading"
              :empty="lift.next30_yi == null">
         <div class="row-wrap small" style="gap:6px;margin-bottom:6px">
           <span class="chip">未来7日 <b>{{ num(lift.next7_yi, 0) }}</b></span>
@@ -262,7 +265,6 @@
         <EChart :option="liftOpt" :height="200" />
         <div class="small muted">
           解禁最多的几天：<span v-for="r in (lift.top_days || [])" :key="r.date" style="margin-right:10px">{{ r.date.slice(5) }} {{ num(r.cap_yi, 0) }}亿</span>
-          <div>{{ lift.how }}</div>
         </div>
       </Panel>
     </div>
@@ -277,7 +279,7 @@
       <ul v-if="gaps.length" class="small" style="line-height:1.9;padding-left:18px;margin:0">
         <li v-for="(g, i) in gaps" :key="i" style="color:#ffcf70">{{ g }}</li>
       </ul>
-      <div v-else class="small muted">本次所有分项都取到了数据。</div>
+      <div v-else-if="!loading" class="small muted">本次所有分项都取到了数据。</div>
       <div class="small dim" style="margin-top:6px">
         来源：<span v-for="(v, k) in ((d.meta || {}).sources || {})" :key="k" style="margin-right:10px">{{ k }}={{ v }}</span>
         <span v-if="(d.meta || {}).cached" class="tag gray tiny">缓存</span>
@@ -306,6 +308,7 @@ import Panel from '../components/Panel.vue'
 import StatCard from '../components/StatCard.vue'
 import EChart from '../components/EChart.vue'
 import { api } from '../api'
+import { indicatorHelp as h, indicatorHow as how } from '../store'
 import { cls, num, pct as pctf, signed, scoreColor } from '../format'
 
 // ---------- 状态 ----------

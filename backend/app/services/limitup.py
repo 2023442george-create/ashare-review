@@ -9,8 +9,7 @@ from typing import Any
 from ..core import cache
 from ..core.config import settings
 from ..core.utils import (code_to_symbol, current_trade_date, fnum, is_trade_day,
-                          last_trade_day, normalize_date, prev_trade_day, to_date,
-                          yyyymmdd)
+                          normalize_date, to_date, yyyymmdd)
 from ..sources import akshare_source as aks
 from ..sources import eastmoney as em
 from ..sources import mock
@@ -227,8 +226,3 @@ def _ladder_comment(max_b: int, gaps: list[int], zt_count: int) -> str:
     if zt_count >= 60:
         return f"最高{max_b}板但涨停{zt_count}家，属于「广度好、高度差」的普涨轮动行情，做首板优于做接力"
     return f"最高{max_b}板，高度不足，情绪偏弱，以低吸首板为主"
-
-
-async def prev_pool(kind: str = "zt", n: int = 1) -> cache.Sourced:
-    d = str(prev_trade_day(last_trade_day(), n))
-    return await pool(kind, d)

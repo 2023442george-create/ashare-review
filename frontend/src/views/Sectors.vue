@@ -1,6 +1,6 @@
 <template>
   <div class="stack">
-    <Panel title="主线判定" sub="涨停家数 × 连板高度 × 板块涨幅 × 主力净流入 四维交叉验证">
+    <Panel title="主线判定" sub="涨停家数 × 连板高度 × 板块涨幅 × 主力净流入 四维交叉验证" :how="how('mainline')">
       <div v-if="(ml.warnings || []).length" class="small"
            style="margin-bottom:10px;padding:8px 10px;border-radius:6px;background:#2a2113;border:1px solid #5c4617;color:#ffcf70">
         ⚠ {{ (ml.warnings || []).join('；') }}
@@ -69,13 +69,16 @@
         </div>
         <div class="scroll-y" style="max-height:560px">
           <table class="tbl">
-            <thead><tr><th>#</th><th>板块</th><th class="num">涨跌幅</th><th class="num">主力净流入</th>
-              <th class="num">净占比%</th><th class="num">涨/跌家数</th><th>领涨股</th><th class="num">换手%</th></tr></thead>
+            <thead><tr><th>#</th><th>板块</th><th class="num">涨跌幅</th>
+              <th class="num">5日/20日 <span class="help" :title="h('pct_nd')">?</span></th>
+              <th class="num">主力净流入 <span class="help" :title="h('main_flow')">?</span></th>
+              <th class="num">净占比% <span class="help" :title="h('main_flow_ratio')">?</span></th><th class="num">涨/跌家数</th><th>领涨股</th><th class="num">换手%</th></tr></thead>
             <tbody>
               <tr v-for="(r, i) in filtered" :key="r.code">
                 <td class="dim">{{ i + 1 }}</td>
                 <td><b>{{ r.name }}</b> <span class="dim tiny">{{ r.code }}</span></td>
                 <td class="num"><PctText :v="r.pct" /></td>
+                <td class="num small"><PctText :v="r.pct_5d" /> / <PctText :v="r.pct_20d" /></td>
                 <td class="num mono" :class="cls(r.main_flow)">{{ signed(r.main_flow_yi, 2) }}亿</td>
                 <td class="num mono muted">{{ num(r.main_flow_ratio, 2) }}</td>
                 <td class="num small">
@@ -103,7 +106,7 @@
       </div>
     </div>
 
-    <Panel title="个股主力资金净流入榜" sub="看资金真正在买谁（前50）" nopad tight>
+    <Panel title="个股主力资金净流入榜" sub="主力资金是按大单估算的，不是真实账户数据（前50）" nopad tight>
       <template #extra><span class="src">{{ srcName2 }}</span></template>
       <div class="scroll-y" style="max-height:420px">
         <table class="tbl">
@@ -135,7 +138,7 @@ import Panel from '../components/Panel.vue'
 import EChart from '../components/EChart.vue'
 import PctText from '../components/PctText.vue'
 import { api } from '../api'
-import { srcTag } from '../store'
+import { indicatorHelp as h, indicatorHow as how, srcTag } from '../store'
 import { cls, num, signed } from '../format'
 
 const ml = ref({}); const rows = ref([]); const flow = ref([])

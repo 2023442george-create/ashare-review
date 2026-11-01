@@ -61,8 +61,9 @@ async def _breadth_em(date: str | None = None) -> dict | None:
         "up_ratio": round(up / max(1, up + down) * 100, 2),
         "limit_up": buckets.get(11, 0),
         "limit_down": buckets.get(-11, 0),
-        "gt5_up": sum(v for k, v in buckets.items() if k >= 5),
-        "lt5_down": sum(v for k, v in buckets.items() if k <= -5),
+        # 分桶 k 表示 (k-1)%~k%，k=6 才是 5%~6%；取 k>=5 会把 4%~5% 也算进"涨幅>5%"
+        "gt5_up": sum(v for k, v in buckets.items() if k >= 6),
+        "lt5_down": sum(v for k, v in buckets.items() if k <= -6),
         "histogram": hist,
     }
 
@@ -79,8 +80,8 @@ def _breadth_mock(date: str | None = None) -> dict:
         "date": str(data["qdate"]), "up": up, "down": down, "flat": buckets.get(0, 0),
         "total": up + down + buckets.get(0, 0), "up_ratio": round(up / max(1, up + down) * 100, 2),
         "limit_up": buckets.get(11, 0), "limit_down": buckets.get(-11, 0),
-        "gt5_up": sum(v for k, v in buckets.items() if k >= 5),
-        "lt5_down": sum(v for k, v in buckets.items() if k <= -5),
+        "gt5_up": sum(v for k, v in buckets.items() if k >= 6),
+        "lt5_down": sum(v for k, v in buckets.items() if k <= -6),
         "histogram": [],
     }
 
@@ -237,17 +238,18 @@ def _factor_independence(history: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def temperature_label(score: float) -> dict:
+    # 这里只按当日分数分档；"修复""退潮"这类周期阶段由 detect_phase 结合趋势判断，两者不要用同一批词
     if score >= 85:
-        return {"label": "极度亢奋", "color": "#ff3b3b", "phase_hint": "高潮", "advice": "情绪透支，只做龙头不追高，逐步兑现利润"}
+        return {"label": "极度亢奋", "color": "#ff3b3b", "advice": "情绪透支，只做龙头不追高，逐步兑现利润"}
     if score >= 70:
-        return {"label": "主升发酵", "color": "#ff7a45", "phase_hint": "发酵", "advice": "赚钱效应扩散，可积极打板/半路，仓位6-8成"}
+        return {"label": "主升发酵", "color": "#ff7a45", "advice": "赚钱效应扩散，可积极打板/半路，仓位6-8成"}
     if score >= 55:
-        return {"label": "温和偏暖", "color": "#ffb020", "phase_hint": "修复", "advice": "选择性参与主线首板与二板，仓位4-6成"}
+        return {"label": "温和偏暖", "color": "#ffb020", "advice": "选择性参与主线首板与二板，仓位4-6成"}
     if score >= 40:
-        return {"label": "分歧震荡", "color": "#a0a8b8", "phase_hint": "分歧", "advice": "只做确定性龙头，减少接力，仓位3成以下"}
+        return {"label": "分歧震荡", "color": "#a0a8b8", "advice": "只做确定性龙头，减少接力，仓位3成以下"}
     if score >= 25:
-        return {"label": "退潮降温", "color": "#40a9ff", "phase_hint": "退潮", "advice": "空仓或轻仓观望，等待跌停潮结束"}
-    return {"label": "冰点", "color": "#36cfc9", "phase_hint": "冰点", "advice": "极度冰点往往是转折前夜，盯首板与放量止跌信号，可小仓试错"}
+        return {"label": "情绪低迷", "color": "#40a9ff", "advice": "空仓或轻仓观望，等待跌停潮结束"}
+    return {"label": "冰点", "color": "#36cfc9", "advice": "极度冰点往往是转折前夜，盯首板与放量止跌信号，可小仓试错"}
 
 
 def detect_phase(score: float, prev_scores: list[float], m: dict[str, Any]) -> dict:

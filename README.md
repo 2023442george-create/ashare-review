@@ -86,13 +86,13 @@ pip install adata baostock yfinance
 | 数据 | 主源 | 备用顺序 | 说明 |
 |---|---|---|---|
 | A股指数/个股行情 | 腾讯 `qt.gtimg.cn` | 新浪 `hq.sinajs.cn` → 东财 `push2/push2delay` → akshare → 内置样例 | 腾讯 HTTP 即可访问、最稳 |
-| K线历史 | 腾讯 `web.ifzq.gtimg.cn` | 新浪 `quotes.sina.cn` → 东财 `push2his` → akshare | 东财K线自带成交额 |
+| K线历史 | 东财 `push2his` | 腾讯 `newfqkline` → 新浪 `quotes.sina.cn` → akshare | 东财、腾讯都带真实成交额；只有新浪时才按量推算并标记 |
 | 涨停/炸板/跌停池、涨跌分布 | 东财 `push2ex` | akshare → 内置样例 | 复盘核心，东财独家口径 |
 | 行业/概念板块、资金流 | 东财 `push2/push2delay clist` | 新浪板块 → akshare | 含主力净流入、涨跌家数、领涨股 |
 | 龙虎榜+营业部席位 | 东财 `datacenter-web` | akshare | 含买卖席位、3日胜率 |
-| 外围（美/日/韩/台/港/商品/汇率） | 东财全球指数 | 腾讯 → 新浪(gb_$ / int_ / hf_ / fx_) → Yahoo → Stooq | 逐资产 failover |
+| 外围（美/日/韩/台/港/商品/汇率） | 东财全球指数 | 腾讯 → 新浪(gb_$ / znb_ / hf_ / fx_ / DINIW / globalbd_) → Yahoo → Stooq | 逐资产 failover |
 | 7×24 快讯 | 华尔街见闻 | 东财 → 新浪 → 财联社(带签名) | 并发拉取后聚合去重 |
-| 两融/沪深港通 | 东财 `datacenter-web` | akshare | 北向实时净买入已停发，用成交额口径 |
+| 两融/南向资金 | 东财 `datacenter-web` | — | 北向净买入已停发，只用南向 |
 | 指数估值 PE | 中证指数官网 `index-perf` | 蛋卷 `pe_history` | 官方滚动市盈率；PB/股息率只有蛋卷 |
 | 中美国债收益率 | 东财 `datacenter-web` `RPTA_WEB_TREASURYYIELD` | 东财旧版 `datacenter` | 同一份数据的两个入口 |
 | 宽基 ETF 份额 | 上交所 `commonQuery` | — | 暂不含深交所产品；首次接入请看 `/api/macro/probe` |

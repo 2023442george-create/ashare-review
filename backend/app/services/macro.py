@@ -38,7 +38,7 @@ from typing import Any
 from ..core import cache, store
 from ..core.config import settings
 from ..core.utils import fnum, last_trade_day, now_cn, prev_trade_day, to_date, yi
-from ..sources import cffex, csindex, danjuan, sse, tencent
+from ..sources import cffex, csindex, danjuan, sina, sse, tencent
 from ..sources import eastmoney as em
 
 # 宏观参数刻意不放进 core/params.py：那里的参数指纹会写进结果账本，
@@ -80,7 +80,8 @@ TEMP_BANDS: tuple[tuple[float, str, str], ...] = (
 
 VALUATION_INDEXES: tuple[dict[str, str], ...] = (
     {"key": "csi300", "name": "沪深300", "cs": "000300", "dj": "SH000300"},
-    {"key": "csiall", "name": "中证全指", "cs": "000985", "dj": "SH000985"},
+    # 蛋卷没有中证全指，PB、股息率用同样覆盖全 A 的国证A指代替；界面会注明
+    {"key": "csiall", "name": "中证全指", "cs": "000985", "dj": "SZ399317", "dj_name": "国证A指"},
 )
 DIVIDEND_INDEX = {"key": "csidiv", "name": "中证红利", "cs": "000922", "dj": "SH000922"}
 
@@ -378,7 +379,7 @@ def _mock_yields() -> list[dict]:
 
 def _mock_eva() -> dict[str, dict]:
     return {"SH000300": {"name": "沪深300", "pe": 12.8, "pb": 1.38, "dividend_yield": 3.1},
-            "SH000985": {"name": "中证全指", "pe": 17.9, "pb": 1.62, "dividend_yield": 2.2},
+            "SZ399317": {"name": "国证A指", "pe": 17.9, "pb": 1.62, "dividend_yield": 2.2},
             "SH000922": {"name": "中证红利", "pe": 7.6, "pb": 0.78, "dividend_yield": 5.4}}
 
 
@@ -405,8 +406,9 @@ def _mock_cffex(variety: str, date: str, lag: int) -> list[dict]:
 
 
 def _mock_margin() -> list[list]:
-    """样例两融：[date, 两融余额, 融资买入额]。"""
-    return [[d, round(1.6e12 + 2.5e11 * math.sin(i / 90), 0), round(7.5e10 + 1.5e10 * math.sin(i / 40), 0)]
+    """样例两融：[date, 两融余额, 融资买入额, A 股流通市值]。"""
+    return [[d, round(1.6e12 + 2.5e11 * math.sin(i / 90), 0), round(7.5e10 + 1.5e10 * math.sin(i / 40), 0),
+             round(7e13 + 5e12 * math.sin(i / 120), 0)]
             for i, d in enumerate(_mock_days(2))]
 
 
@@ -511,11 +513,11 @@ async def bond_series(force: bool = False) -> cache.Sourced:
 
 
 async def margin_series(force: bool = False) -> cache.Sourced:
-    """两融余额历史 [[date, 两融余额(元)], ...]，约 2 年。"""
+    """两融历史 [[date, 两融余额(元), 融资买入额(元), A 股流通市值(元)], ...]，约 2 年。"""
     async def _em() -> list[list]:
         rows = await em.margin_history(MACRO_PARAMS["flow_days"])
-        # 第 3 列融资买入额用于"融资买入占成交额比"
-        out = [[str(r.get("DIM_DATE", ""))[:10], fnum(r.get("RZRQYE")), fnum(r.get("RZMRE"))] for r in rows]
+        out = [[str(r.get("DIM_DATE", ""))[:10], fnum(r.get("RZRQYE")), fnum(r.get("RZMRE")), fnum(r.get("LTSZ"))]
+               for r in rows]
         return sorted([r for r in out if r[0] and r[1]], key=lambda x: x[0])
 
     registry = {"eastmoney": _em, "mock": _mock_margin}
@@ -716,6 +718,16 @@ async def ah_series(force: bool = False) -> cache.Sourced:
                              validator=lambda r: isinstance(r, list) and len(r) >= MACRO_PARAMS["min_flow_history"])
 
 
+async def ah_snapshot() -> dict | None:
+    """新浪的 AH 溢价当前值：历史 K 线取不到时至少把当前值显示出来。"""
+    if settings.offline:
+        return None
+    f = (await sina.quote_raw(["znb_HSAHP"])).get("znb_HSAHP") or []
+    if len(f) < 7 or fnum(f[1]) is None:
+        return None
+    return {"value": fnum(f[1]), "chg1": fnum(f[2]), "date": f[6]}
+
+
 async def lift_schedule(force: bool = False) -> cache.Sourced:
     """过去 / 未来各 30 个自然日每天的限售股解禁市值。"""
     w = MACRO_PARAMS["lift_window"]
@@ -789,6 +801,7 @@ def _valuation_item(idx: dict[str, str], pe_res: Any, pb_res: Any, eva: dict[str
         item.update({"pb": None, "pb_pct": None, "pb_source": "none"})
         gaps.append(f"{idx['name']} PB：蛋卷不可用（中证官网不提供 PB）")
     item["dividend_yield"] = (eva.get(idx["dj"]) or {}).get("dividend_yield")
+    item["pb_proxy"] = idx.get("dj_name")     # PB、股息率实际取自哪个指数（None = 就是它本身）
     return item
 
 
@@ -864,20 +877,22 @@ def _turnover_block(th: dict, gaps: list[str]) -> dict[str, Any]:
 
 
 def _margin_block(res: Any, gaps: list[str]) -> dict[str, Any]:
-    """两融余额：最新值、20 日变化及近约 2 年分位。"""
+    """两融余额：最新值、20 日变化、近约 2 年分位，以及占流通市值比。"""
     rows = res.data if isinstance(res, cache.Sourced) and res.data else []
     if not rows:
         gaps.append("两融余额：东财数据中心不可用")
         return {"balance_yi": None, "pct": None, "source": "none"}
     vals = [r[1] for r in rows]
     prev20 = rows[-21][1] if len(rows) > 20 else None
+    ratios = [round(r[1] / r[3] * 100, 3) for r in rows if len(r) > 3 and r[3]]
     return {
         "date": rows[-1][0], "balance_yi": yi(vals[-1]),
         "chg20_yi": yi(vals[-1] - prev20) if prev20 else None,
         "pct": percentile_rank(vals, vals[-1], MACRO_PARAMS["min_flow_history"]),
+        "float_ratio": ratios[-1] if ratios else None,
+        "float_ratio_pct": percentile_rank(ratios, ratios[-1], MACRO_PARAMS["min_flow_history"]) if ratios else None,
         "n": len(vals), "from": rows[0][0], "source": res.source,
         "series": downsample([[r[0], yi(r[1])] for r in rows], 300),
-        "note": "占流通市值比需全A流通市值序列，暂未接入",
     }
 
 
@@ -895,7 +910,7 @@ def _margin_buy_block(margin_res: Any, th: dict, gaps: list[str]) -> dict[str, A
         "pct": percentile_rank(vals, vals[-1], MACRO_PARAMS["min_flow_history"]),
         "n": len(vals), "estimated": bool(th.get("estimated")),
         "series": downsample(ratios, 300),
-        "how": "融资买入额 / 两市成交额。两融余额是存量反应慢，这个比例对杠杆过热更敏感，2015 年顶部它先见顶",
+        "how": "融资买入额 / 两市成交额。两融余额是存量反应慢，这个比例是当天的增量，对杠杆资金过热更敏感",
     }
 
 
@@ -917,12 +932,17 @@ def _south_block(res: Any, gaps: list[str]) -> dict[str, Any]:
     }
 
 
-def _ah_block(res: Any, gaps: list[str]) -> dict[str, Any]:
-    """AH 溢价指数：当前值、近约 2 年分位、20 日变化。"""
+def _ah_block(res: Any, gaps: list[str], snapshot: dict | None = None) -> dict[str, Any]:
+    """AH 溢价指数：当前值、近约 2 年分位、20 日变化；没有历史 K 线时只给当前值。"""
+    how = "100 = 同一批公司 A 股与 H 股同价，高于 100 的部分就是 A 股的溢价。分位越高，A 股相对国际定价越贵"
     rows = res.data if isinstance(res, cache.Sourced) and res.data else []
     pts = [[r[0], r[2]] for r in rows if len(r) > 2 and r[2]]
     if not pts:
-        gaps.append("AH 溢价指数：东财与腾讯行情均不可用")
+        if snapshot and snapshot.get("value") is not None:
+            # 腾讯、新浪都没有这只指数的历史 K 线，只有东财有；东财不通时给当前值，不给分位
+            gaps.append("AH 溢价指数：历史 K 线不可用（仅东财提供），只显示当前值，没有分位")
+            return {**snapshot, "pct": None, "source": "sina", "series": [], "how": how}
+        gaps.append("AH 溢价指数：东财与新浪行情均不可用")
         return {"value": None, "pct": None, "source": "none"}
     vals = [v for _, v in pts]
     return {
@@ -931,7 +951,7 @@ def _ah_block(res: Any, gaps: list[str]) -> dict[str, Any]:
         "q": {"q20": quantile(vals, .2), "q80": quantile(vals, .8)},
         "chg20": round(vals[-1] - vals[-21], 2) if len(vals) > 20 else None,
         "series": downsample(pts, 300),
-        "how": "100 = 同一批公司 A 股与 H 股同价，高于 100 的部分就是 A 股的溢价。分位越高，A 股相对国际定价越贵",
+        "how": how,
     }
 
 
@@ -963,21 +983,29 @@ def _components(val: list[dict], erp: dict, turnover: dict, margin: dict, mbuy: 
     erp_pct = erp.get("erp_pct")
     return [
         {"key": "pe_csi300", "group": "valuation", "name": "沪深300 PE 分位", "value": v300.get("pe"), "unit": "倍",
-         "pct": v300.get("pe_pct"), "heat": v300.get("pe_pct"), "window": "近10年", "source": v300.get("pe_source")},
+         "pct": v300.get("pe_pct"), "heat": v300.get("pe_pct"), "window": "近10年", "source": v300.get("pe_source"),
+         "how": "大盘股贵不贵。分位 = 过去 10 年有多少比例的日子比现在便宜，越高越贵"},
         {"key": "pe_csiall", "group": "valuation", "name": "中证全指 PE 分位", "value": vall.get("pe"), "unit": "倍",
-         "pct": vall.get("pe_pct"), "heat": vall.get("pe_pct"), "window": "近10年", "source": vall.get("pe_source")},
+         "pct": vall.get("pe_pct"), "heat": vall.get("pe_pct"), "window": "近10年", "source": vall.get("pe_source"),
+         "how": "全 A 整体贵不贵。和沪深300对比：全指分位明显更高，说明中小盘比大盘贵"},
         # ERP 越高代表股票越便宜，所以热度取反
         {"key": "erp", "group": "valuation", "name": "股债性价比 ERP（反向）", "value": erp.get("erp"), "unit": "%",
          "pct": erp_pct, "heat": round(100 - erp_pct, 1) if erp_pct is not None else None,
-         "window": "近10年", "source": "沪深300 PE + 10年国债"},
+         "window": "近10年", "source": "沪深300 PE + 10年国债",
+         "how": "买股票比买国债多赚多少。ERP 越高股票越划算，所以热度 = 100 − 分位"},
         {"key": "turnover", "group": "flow", "name": "成交额 20 日均值分位", "value": turnover.get("ma20_yi"), "unit": "亿",
          "pct": turnover.get("pct"), "heat": turnover.get("pct"), "window": "近约2年", "source": turnover.get("source"),
-         "estimated": bool(turnover.get("estimated"))},
+         "estimated": bool(turnover.get("estimated")),
+         "how": "市场有多少钱在交易。用 20 日均值是为了滤掉单日放量缩量"},
         {"key": "margin_buy", "group": "flow", "name": "融资买入占成交额比分位", "value": mbuy.get("ratio"), "unit": "%",
          "pct": mbuy.get("pct"), "heat": mbuy.get("pct"), "window": "近约2年", "source": "两融 ÷ 成交额",
-         "estimated": bool(mbuy.get("estimated"))},
-        {"key": "margin", "group": "flow", "name": "两融余额分位", "value": margin.get("balance_yi"), "unit": "亿",
-         "pct": margin.get("pct"), "heat": margin.get("pct"), "window": "近约2年", "source": margin.get("source")},
+         "estimated": bool(mbuy.get("estimated")),
+         "how": "当天成交里有多少是借钱买的，越高说明杠杆资金越激进"},
+        # 不用余额分位：指数涨市值就涨，余额跟着被动变大，比值才反映杠杆水平
+        {"key": "margin", "group": "flow", "name": "两融余额占流通市值分位", "value": margin.get("float_ratio"), "unit": "%",
+         "pct": margin.get("float_ratio_pct"), "heat": margin.get("float_ratio_pct"), "window": "近约2年",
+         "source": margin.get("source"),
+         "how": "全市场的杠杆水平。扣除了市值涨跌的影响，比看余额绝对值更可比"},
     ]
 
 
@@ -1009,13 +1037,13 @@ async def overview(force: bool = False) -> dict[str, Any]:
     v300, vall = VALUATION_INDEXES
     # 所有原始数据互不依赖，并发拉取；单项失败以异常对象返回，不拖垮整页
     (pe300, peall, pb300, pball, eva_res, bond_res, th, margin_res, etf, fut, basis, style,
-     south_res, ah_res, lift_res) = await asyncio.gather(
+     south_res, ah_res, ah_snap, lift_res) = await asyncio.gather(
         pe_series(v300, force), pe_series(vall, force), pb_series(v300, force), pb_series(vall, force),
         eva_snapshot(force), bond_series(force),
         market.turnover_history(days=MACRO_PARAMS["flow_days"], force=force),
         margin_series(force), etf_flows(force), futures_positions(force),
         futures_basis(force), style_ratios(force),
-        southbound_series(force), ah_series(force), lift_schedule(force),
+        southbound_series(force), ah_series(force), ah_snapshot(), lift_schedule(force),
         return_exceptions=True,
     )
     eva = eva_res.data if isinstance(eva_res, cache.Sourced) and eva_res.data else {}
@@ -1058,7 +1086,7 @@ async def overview(force: bool = False) -> dict[str, Any]:
         gaps.append("中证红利股息率：蛋卷不可用，红利股息率差无法计算")
 
     south = _south_block(south_res, gaps)
-    ah = _ah_block(ah_res, gaps)
+    ah = _ah_block(ah_res, gaps, ah_snap if isinstance(ah_snap, dict) else None)
     lift = _lift_block(lift_res, gaps)
     components = _components(valuation, erp, turnover, margin, mbuy)
     payload: dict[str, Any] = {
@@ -1226,7 +1254,7 @@ async def probe() -> dict[str, Any]:
         _probe("中金所 股指期货持仓排名", p_cffex()),
         _probe("中金所 股指期货日行情（基差）", p_cffex_daily()),
         _probe("东财 南向资金", p_south()),
-        _probe("AH 溢价指数（东财 / 腾讯）", p_ah()),
+        _probe("AH 溢价指数历史（东财 / 腾讯）", p_ah()),
         _probe("东财 限售股解禁", p_lift()),
     )
     return {"offline": False, "items": list(items),
